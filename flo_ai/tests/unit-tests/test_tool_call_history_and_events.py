@@ -210,10 +210,135 @@ class TestProviderFormats:
         assert llm.format_tool_call_message('', self.calls) == {
             'role': 'assistant',
             'content': None,
-            'function_call': {
-                'name': 'create_workflow',
-                'arguments': '{"title": "w1"}',
-            },
+            'tool_calls': [
+                {
+                    'id': 'toolu_1',
+                    'type': 'function',
+                    'function': {
+                        'name': 'create_workflow',
+                        'arguments': '{"title": "w1"}',
+                    },
+                }
+            ],
+        }
+        assert llm.format_function_result_message(
+            'create_workflow', 'created w1', 'toolu_1'
+        ) == {'role': 'tool', 'tool_call_id': 'toolu_1', 'content': 'created w1'}
+
+    async def test_openai_history_gives_an_id_to_a_call_stored_without_one(self):
+        agent = Agent('a', 'sys', OpenAI(model='gpt-5.4', api_key='x'))
+        agent.add_to_history(
+            [
+                UserMessage(content='make a workflow'),
+                AssistantMessage(
+                    content='',
+                    tool_calls=[
+                        ToolCall(name='create_workflow', arguments={'title': 'w1'})
+                    ],
+                ),
+                FunctionMessage(content='created w1', name='create_workflow'),
+                AssistantMessage(content='Done.'),
+            ]
+        )
+
+        messages = await agent._get_message_history()
+
+        call_id = messages[1]['tool_calls'][0]['id']
+        assert call_id
+        assert messages[2] == {
+            'role': 'tool',
+            'tool_call_id': call_id,
+            'content': 'created w1',
+        }
+        # No message uses the role newer models reject.
+        assert all(message['role'] != 'function' for message in messages)
+
+    async def test_openai_requests_tools_one_call_at_a_time(self):
+        from unittest.mock import AsyncMock
+
+        llm = OpenAI(model='gpt-5.4', api_key='x')
+        reply = MagicMock(content='ok', tool_calls=None, function_call=None)
+        llm.client.chat.completions.create = AsyncMock(
+            return_value=MagicMock(choices=[MagicMock(message=reply)], usage=None)
+        )
+
+        await llm.generate(
+            [{'role': 'user', 'content': 'hi'}],
+            functions=[{'name': 'lookup', 'parameters': {'type': 'object'}}],
+        )
+
+        sent = llm.client.chat.completions.create.call_args.kwargs
+        assert sent['tools'] == [
+            {
+                'type': 'function',
+                'function': {'name': 'lookup', 'parameters': {'type': 'object'}},
+            }
+        ]
+        assert sent['parallel_tool_calls'] is False
+        assert 'functions' not in sent
+
+    async def test_openai_drops_a_temperature_the_model_refuses(self):
+        from unittest.mock import AsyncMock
+
+        import httpx
+        from openai import BadRequestError
+
+        llm = OpenAI(model='gpt-5.5', api_key='x', temperature=0)
+        refusal = BadRequestError(
+            "Unsupported value: 'temperature' does not support 0 with this model.",
+            response=httpx.Response(
+                400, request=httpx.Request('POST', 'https://api.openai.com/v1')
+            ),
+            body={'param': 'temperature', 'code': 'unsupported_value'},
+        )
+        reply = MagicMock(content='ok', tool_calls=None, function_call=None)
+        ok = MagicMock(choices=[MagicMock(message=reply)], usage=None)
+        create = AsyncMock(side_effect=[refusal, ok, ok])
+        llm.client.chat.completions.create = create
+
+        await llm.generate([{'role': 'user', 'content': 'hi'}])
+        await llm.generate([{'role': 'user', 'content': 'again'}])
+
+        sent = [call.kwargs for call in create.call_args_list]
+        assert 'temperature' in sent[0]
+        assert 'temperature' not in sent[1]
+        # Remembered: the next request does not try it again.
+        assert 'temperature' not in sent[2]
+        assert len(sent) == 3
+
+    async def test_openai_other_bad_requests_are_not_retried(self):
+        from unittest.mock import AsyncMock
+
+        import httpx
+        from openai import BadRequestError
+
+        llm = OpenAI(model='gpt-5.5', api_key='x')
+        error = BadRequestError(
+            'bad messages',
+            response=httpx.Response(
+                400, request=httpx.Request('POST', 'https://api.openai.com/v1')
+            ),
+            body={'param': 'messages'},
+        )
+        create = AsyncMock(side_effect=error)
+        llm.client.chat.completions.create = create
+
+        with pytest.raises(BadRequestError):
+            await llm.generate([{'role': 'user', 'content': 'hi'}])
+
+        assert create.await_count == 1
+
+    async def test_openai_reads_the_tool_call_and_its_id(self):
+        llm = OpenAI(model='gpt-5.4', api_key='x')
+        call = MagicMock(id='call_abc')
+        call.function.name = 'lookup'
+        call.function.arguments = '{"q": 1}'
+        response = MagicMock(tool_calls=[call], function_call=None)
+
+        assert await llm.get_function_call(response) == {
+            'name': 'lookup',
+            'arguments': '{"q": 1}',
+            'id': 'call_abc',
         }
 
     def test_anthropic(self):

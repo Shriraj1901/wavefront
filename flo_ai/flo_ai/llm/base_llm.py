@@ -265,6 +265,11 @@ class BaseLLM(ABC):
         """
         return None
 
+    #: True for a provider that only accepts a tool result that names the call
+    #: it answers. A conversation stored before ids were recorded, or by a
+    #: provider that issues none, is then given ids when a request is built.
+    requires_tool_call_ids: bool = False
+
     def format_tool_call_message(
         self, content: str, tool_calls: List[Any]
     ) -> Optional[Dict[str, Any]]:

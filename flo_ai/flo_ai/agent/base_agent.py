@@ -9,6 +9,7 @@ from flo_ai.models.chat_message import (
     MediaMessageContent,
     TextMessageContent,
     FunctionMessage,
+    ToolCall,
 )
 from flo_ai.utils.variable_extractor import resolve_variables
 from flo_ai.utils.profiler import aprofile
@@ -174,13 +175,17 @@ class BaseAgent(ABC):
 
         # Second pass: assemble the provider-ready message list.
         message_history: List[Dict[str, Any]] = []
+        # The id given to a stored call that has none, for its result to reuse.
+        stand_in_id: Optional[str] = None
+        needs_ids = getattr(self.llm, 'requires_tool_call_ids', False) is True
         for idx, input in enumerate(self.conversation_history):
             if isinstance(input, FunctionMessage):
                 message_history.append(
                     self.llm.format_function_result_message(
-                        input.name, input.content, input.tool_call_id
+                        input.name, input.content, input.tool_call_id or stand_in_id
                     )
                 )
+                stand_in_id = None
             elif isinstance(input, AssistantMessage) and input.tool_calls:
                 # A call is only sent with its result. One left unanswered (a
                 # run cut short after the call was stored) would make the
@@ -191,8 +196,28 @@ class BaseAgent(ABC):
                     else None
                 )
                 text = str(input.content or '')
+                tool_calls = input.tool_calls
+                stand_in_id = None
+                if (
+                    needs_ids
+                    and isinstance(following, FunctionMessage)
+                    and not tool_calls[0].id
+                    and not following.tool_call_id
+                ):
+                    # Stored without an id (an older conversation, or one from
+                    # a provider that issues none). Any id will do, as long as
+                    # the call and its result agree on it.
+                    stand_in_id = f'call_{idx}'
+                    tool_calls = [
+                        ToolCall(
+                            name=tool_calls[0].name,
+                            arguments=tool_calls[0].arguments,
+                            id=stand_in_id,
+                        ),
+                        *tool_calls[1:],
+                    ]
                 formatted = (
-                    self.llm.format_tool_call_message(text, input.tool_calls)
+                    self.llm.format_tool_call_message(text, tool_calls)
                     if isinstance(following, FunctionMessage)
                     else None
                 )

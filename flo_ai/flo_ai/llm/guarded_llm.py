@@ -172,6 +172,10 @@ class GuardedLLM(BaseLLM):
     # provider's own version (Claude's tool_use handling, say) would be
     # replaced by the default.
 
+    @property
+    def requires_tool_call_ids(self) -> bool:  # type: ignore[override]
+        return self._inner_llm.requires_tool_call_ids
+
     async def get_function_call(self, response: Any) -> Optional[Dict[str, Any]]:
         return await self._inner_llm.get_function_call(response)
 
