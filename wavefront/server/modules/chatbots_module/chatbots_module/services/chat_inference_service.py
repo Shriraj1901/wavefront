@@ -10,7 +10,7 @@ from flo_ai.guardrails import Principal, WorkflowStage, is_control_chunk
 from flo_ai.llm import BaseLLM
 from flo_ai.llm.guarded_llm import GuardrailBlocked
 
-from chatbots_module.utils.constants import ROLE_SYSTEM
+from chatbots_module.utils.constants import CONVERSATION_ROLES, ROLE_SYSTEM
 from chatbots_module.utils.llm_factory import build_llm, resolve_temperature
 
 
@@ -149,12 +149,18 @@ class ChatInferenceService:
     def build_messages(
         session: ChatSession, history: list[ChatMessage]
     ) -> list[dict[str, Any]]:
-        """System prompt first, then the thread in send order."""
+        """System prompt first, then the thread in send order.
+
+        Tool rows recorded by voice sessions are left out: they carry no
+        provider tool-call id to pair with, so a text model would reject them.
+        """
         messages: list[dict[str, Any]] = [
             {'role': ROLE_SYSTEM, 'content': session.system_prompt_snapshot}
         ]
         messages.extend(
-            {'role': message.role, 'content': message.content} for message in history
+            {'role': message.role, 'content': message.content}
+            for message in history
+            if message.role in CONVERSATION_ROLES
         )
         return messages
 

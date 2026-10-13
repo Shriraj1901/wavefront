@@ -17,6 +17,38 @@ from flo_ai.telemetry import get_tracer
 from opentelemetry import trace
 
 
+def gemini_function_declaration(tool: Tool) -> Dict[str, Any]:
+    """A tool as a Gemini function declaration.
+
+    Shared by the request/response Gemini wrapper and the Live API one, which
+    accept the same declaration shape.
+    """
+    return {
+        'name': tool.name,
+        'description': tool.description,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                name: {
+                    'type': info.get('type', 'string'),
+                    'description': info.get('description', ''),
+                    **(
+                        {'items': info['items']}
+                        if info.get('type') == 'array' and 'items' in info
+                        else {}
+                    ),
+                }
+                for name, info in tool.parameters.items()
+            },
+            'required': [
+                name
+                for name, info in tool.parameters.items()
+                if info.get('required', True)
+            ],
+        },
+    }
+
+
 class Gemini(BaseLLM):
     provider_name = 'gemini'
 
@@ -264,30 +296,7 @@ class Gemini(BaseLLM):
 
     def format_tool_for_llm(self, tool: 'Tool') -> Dict[str, Any]:
         """Format a single tool for Gemini's function declarations"""
-        return {
-            'name': tool.name,
-            'description': tool.description,
-            'parameters': {
-                'type': 'object',
-                'properties': {
-                    name: {
-                        'type': info.get('type', 'string'),
-                        'description': info.get('description', ''),
-                        **(
-                            {'items': info['items']}
-                            if info.get('type') == 'array' and 'items' in info
-                            else {}
-                        ),
-                    }
-                    for name, info in tool.parameters.items()
-                },
-                'required': [
-                    name
-                    for name, info in tool.parameters.items()
-                    if info.get('required', True)
-                ],
-            },
-        }
+        return gemini_function_declaration(tool)
 
     def format_tools_for_llm(self, tools: List['Tool']) -> List[Dict[str, Any]]:
         """Format tools for Gemini's function declarations"""

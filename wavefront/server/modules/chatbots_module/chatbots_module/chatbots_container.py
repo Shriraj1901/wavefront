@@ -9,6 +9,7 @@ from db_repo_module.repositories.sql_alchemy_repository import SQLAlchemyReposit
 from chatbots_module.services.chat_inference_service import ChatInferenceService
 from chatbots_module.services.chat_session_service import ChatSessionService
 from chatbots_module.services.chatbot_service import ChatbotService
+from chatbots_module.services.voice_session_service import VoiceSessionService
 
 
 class ChatbotsContainer(containers.DeclarativeContainer):
@@ -22,6 +23,10 @@ class ChatbotsContainer(containers.DeclarativeContainer):
     # container stays usable from entry points that do not build the
     # guardrails stack.
     guardrails_engine = providers.Dependency(default=None)
+    # Optional: voice sessions resolve their tools through these; without them
+    # a voice chatbot can only be configured without tools.
+    tool_loader = providers.Dependency(default=None)
+    api_services_manager = providers.Dependency(default=None)
 
     # Repositories
     chatbot_repository = providers.Singleton(
@@ -67,4 +72,12 @@ class ChatbotsContainer(containers.DeclarativeContainer):
         llm_inference_config_service=llm_inference_config_service,
         guardrails_engine=guardrails_engine,
         azure_openai_api_version=config.model.azure_openai_api_version,
+    )
+
+    voice_session_service = providers.Singleton(
+        VoiceSessionService,
+        llm_inference_config_service=llm_inference_config_service,
+        chat_session_service=chat_session_service,
+        tool_loader=tool_loader,
+        api_services_manager=api_services_manager,
     )

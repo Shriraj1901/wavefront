@@ -29,3 +29,8 @@ TITLE_MAX_LENGTH = 60
 ROLE_USER = 'user'
 ROLE_ASSISTANT = 'assistant'
 ROLE_SYSTEM = 'system'
+# A tool call made during a voice session. Stored for the record but never
+# replayed to a text model, which would reject a tool turn it did not request.
+ROLE_TOOL = 'tool'
+
+CONVERSATION_ROLES = (ROLE_USER, ROLE_ASSISTANT)

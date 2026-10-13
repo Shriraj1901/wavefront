@@ -8,6 +8,7 @@ from auth_module.controllers.hmac_controller import hmac_router
 from auth_module.controllers.superset_controller import superset_controller
 from chatbots_module.controllers.chatbot_controller import chatbot_router
 from chatbots_module.controllers.chat_session_controller import chat_session_router
+from chatbots_module.controllers.voice_session_controller import voice_session_router
 from floware.controllers.config_controller import config_router
 from floware.controllers.health_controller import health_router
 from floware.controllers.notification_controller import notification_router
@@ -68,6 +69,7 @@ FLOWARE_ROUTERS = [
     authenticator_router,
     chatbot_router,
     chat_session_router,
+    voice_session_router,
     cloud_storage_router,
     config_router,
     configuration_router,

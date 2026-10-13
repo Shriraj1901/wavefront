@@ -1,0 +1,125 @@
+---
+title: 'Realtime voice'
+description: 'Speech-to-speech agents over a live model session, and when to use Pipecat instead'
+---
+
+`BaseLLM` is request/response: messages in, one completion out. Realtime models hold a bidirectional session open for the whole conversation, take raw audio, detect turns themselves and answer in audio. Flo AI exposes them through a separate interface, `RealtimeLLM`, and an agent that runs tools on top of it, `RealtimeVoiceAgent`.
+
+## Web voice vs phone calls
+
+| | Browser / web app | Telephony (Twilio, Exotel, Smartflo) |
+|---|---|---|
+| Stack | Native realtime model (`RealtimeVoiceAgent` + `GeminiLiveLLM`) | Pipecat pipeline in `apps/call_processing` |
+| Audio | PCM16 over the app's own WebSocket | Provider media streams / SIP, μ-law/A-law codecs |
+| Turn taking | Model-side VAD | Pipecat VAD + STT/LLM/TTS chain |
+| Server entry | `WS /floware/v1/chatbots/{chatbot_id}/voice` | Voice agents module + call_processing |
+
+The phone path is unchanged: it owns codec conversion, provider media protocols, DTMF and call control, none of which a browser session needs. Web sessions skip the STT → LLM → TTS chain and talk to a native-audio model directly, which cuts latency and keeps tone and barge-in natural.
+
+## RealtimeLLM
+
+```python
+from flo_ai.llm import RealtimeLLM
+```
+
+| Method | Purpose |
+|---|---|
+| `await connect(system_prompt, tools, config)` | Open the session. `config` overrides constructor settings per session |
+| `await send_audio(pcm: bytes)` | Stream user audio, PCM16 mono at `input_sample_rate` |
+| `await send_text(text)` | Optional typed input |
+| `await send_tool_result(call_id, result)` | Answer a tool call |
+| `events()` | Async iterator of typed events |
+| `await close()` | End the session |
+
+Events (all in `flo_ai.llm`):
+
+| Event | Fields | Meaning |
+|---|---|---|
+| `AudioOutEvent` | `data` | Model speech, PCM16 mono at `output_sample_rate` |
+| `TranscriptEvent` | `role`, `text`, `final` | Partial (`final=False`) or complete utterance text. Persist the final ones |
+| `ToolCallEvent` | `id`, `name`, `arguments` | The model wants a tool run |
+| `ToolResultEvent` | `id`, `name`, `arguments`, `result`, `error` | Emitted by `RealtimeVoiceAgent` after it ran a tool |
+| `InterruptedEvent` | | The user barged in: drop queued playback |
+| `TurnCompleteEvent` | | The model finished its turn |
+
+Providers format tools with `format_tool_for_llm`, as `BaseLLM` providers do.
+
+## GeminiLiveLLM
+
+Gemini's Live API over the `google-genai` SDK: native audio in (16 kHz) and out (24 kHz), function calling, and transcription of both sides.
+
+```python
+from flo_ai.llm import GeminiLiveLLM
+
+llm = GeminiLiveLLM(
+    model='gemini-2.5-flash-native-audio-preview-09-2025',
+    api_key='...',
+    voice_name='Puck',
+    language='en-US',
+    vad={
+        'start_sensitivity': 'low',     # 'high' | 'low'
+        'end_sensitivity': 'high',      # 'high' | 'low'
+        'prefix_padding_ms': 20,
+        'silence_duration_ms': 600,
+        'interruptions': True,          # False: the user cannot barge in
+        # 'disabled': True,             # client signals activity itself
+    },
+)
+```
+
+## RealtimeVoiceAgent
+
+Binds a `RealtimeLLM` to tools, a system prompt and a `session_context`. Tool calls are executed inside the agent and answered on the same session; you consume one event stream.
+
+```python
+from flo_ai.agent import RealtimeVoiceAgent
+from flo_ai.llm import AudioOutEvent, TranscriptEvent
+
+agent = RealtimeVoiceAgent(
+    llm,
+    tools=[save_lead_tool],
+    system_prompt='You book product demos.',
+    session_context={'user_id': user_id, 'session_id': session_id},
+)
+
+async with agent:
+    # feed microphone audio from another task: await agent.send_audio(chunk)
+    async for event in agent.events():
+        if isinstance(event, AudioOutEvent):
+            play(event.data)
+        elif isinstance(event, TranscriptEvent) and event.final:
+            save(event.role, event.text)
+```
+
+`session_context` is merged into the arguments of every tool that accepts those keys (by name or through `**kwargs`), and it always wins over values the model supplied. Those parameters are removed from the tool schema the model sees. A failing, unknown or timed-out tool is reported back to the model as `{"error": ...}` instead of ending the session.
+
+## Wavefront web endpoint
+
+A chatbot speaks when its `config` has a `voice` block. Its LLM configuration must be a Gemini one, which supplies the API key.
+
+```json
+{
+  "voice": {
+    "model": "gemini-2.5-flash-native-audio-preview-09-2025",
+    "voice_name": "Puck",
+    "language": "en-US",
+    "vad": {"silence_duration_ms": 600},
+    "tools": [
+      {"name": "datasource_execute_query",
+       "prefilled_params": {"datasource_id": "<id>", "query_id": "<id>"}}
+    ],
+    "capture": {"datasource_id": "<id>", "table_name": "voice_captures"}
+  }
+}
+```
+
+Protocol on `WS /floware/v1/chatbots/{chatbot_id}/voice`:
+
+1. Client sends `{"type": "start", "token": "<access token>", "session_id": "<optional>", "config": {"voice_name", "language", "vad"}}` within 10 s. The token is sent in a frame because browsers cannot set headers on a WebSocket.
+2. Server replies `{"type": "ready", "session_id", "input_sample_rate", "output_sample_rate"}`.
+3. Client streams binary PCM16 mono frames, and may send `{"type": "text", "text"}` or `{"type": "stop"}`.
+4. Server streams binary PCM16 audio plus JSON frames: `transcript`, `tool_call`, `tool_result`, `interrupted`, `turn_complete`, `error`.
+
+The user is the one the token authenticates; the client cannot name another. Final transcripts are stored as messages of the chat session, tool results as `tool` messages. With `capture` set, each is also inserted into that datasource table through the `datasource_insert_rows` tool, tagged with `user_id`, `session_id` and `chatbot_id`.
+
+Close codes: `4400` bad request or voice not configured, `4401` unauthenticated, `4403` not a wavefront user, `4404` chatbot or session not found, `1011` model failure.

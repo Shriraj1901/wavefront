@@ -46,6 +46,7 @@
             "group": "Advanced",
             "pages": [
               "flo-ai/advanced/llm-providers",
+                  "flo-ai/advanced/realtime-voice",
               "flo-ai/advanced/tools",
               "flo-ai/advanced/routing",
               "flo-ai/advanced/telemetry"

@@ -12,7 +12,8 @@ dependencies = [
     "db-repo-module",
     "llm-inference-config-module",
     "user-management-module",
-    "flo-ai==1.1.15",
+    "tools-module",
+    "flo-ai==1.1.16",
 ]
 
 [tool.uv.sources]
@@ -20,6 +21,7 @@ common-module = { workspace = true }
 db-repo-module = { workspace = true }
 llm-inference-config-module = { workspace = true }
 user-management-module = { workspace = true }
+tools-module = { workspace = true }
 
 [tool.uv]
 package = true

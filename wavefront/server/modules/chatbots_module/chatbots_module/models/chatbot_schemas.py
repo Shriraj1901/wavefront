@@ -4,6 +4,8 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from chatbots_module.models.voice_schemas import VoiceConfig
+
 # A name is an identifier, not free text -- close to the agents/workflows rule
 # in agents_module/utils/validation_utils.py, but requiring a leading letter
 # rather than a letter or digit.
@@ -40,6 +42,8 @@ def _validate_config(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
             raise ValueError('config.temperature must be a number')
         if not 0 <= temperature <= 2:
             raise ValueError('config.temperature must be between 0 and 2')
+    if value.get('voice') is not None:
+        VoiceConfig.model_validate(value['voice'])
     return value
 
 
@@ -58,7 +62,11 @@ class CreateChatbotPayload(BaseModel):
     )
     llm_config_id: uuid.UUID = Field(..., description='LLM inference config ID')
     config: Optional[Dict[str, Any]] = Field(
-        None, description='Overrides on top of the LLM config; supports "temperature"'
+        None,
+        description=(
+            'Overrides on top of the LLM config; supports "temperature" and '
+            '"voice" (see VoiceConfig)'
+        ),
     )
     enabled: bool = Field(
         False, description='Chatbots start disabled; enable once the prompt is ready'

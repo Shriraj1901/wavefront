@@ -8,6 +8,17 @@ from .vertexai_llm import VertexAI
 from .rootflo_llm import RootFloLLM
 from .aws_bedrock_llm import AWSBedrock
 from .azure_openai_llm import AzureOpenAI
+from .base_realtime_llm import (
+    RealtimeLLM,
+    RealtimeEvent,
+    AudioOutEvent,
+    TranscriptEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    InterruptedEvent,
+    TurnCompleteEvent,
+)
+from .gemini_live_llm import GeminiLiveLLM
 
 __all__ = [
     'BaseLLM',
@@ -20,4 +31,13 @@ __all__ = [
     'RootFloLLM',
     'AWSBedrock',
     'AzureOpenAI',
+    'RealtimeLLM',
+    'RealtimeEvent',
+    'AudioOutEvent',
+    'TranscriptEvent',
+    'ToolCallEvent',
+    'ToolResultEvent',
+    'InterruptedEvent',
+    'TurnCompleteEvent',
+    'GeminiLiveLLM',
 ]
