@@ -198,6 +198,7 @@ class ApplicationContainer(containers.DeclarativeContainer):
         llm_inference_config_service=llm_inference_config.llm_inference_config_service,
         agent_crud_service=agents.agent_crud_service,
         agent_inference_service=agents.agent_inference_service,
+        guardrails_engine=providers.Callable(guardrails_engine, guardrails),
     )
 
     scheduler_manager = providers.Singleton(SchedulerManager)
