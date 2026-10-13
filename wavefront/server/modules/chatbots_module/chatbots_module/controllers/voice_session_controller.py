@@ -91,28 +91,30 @@ async def chatbot_voice_session(
         raw = await asyncio.wait_for(websocket.receive_text(), AUTH_TIMEOUT_SECONDS)
         start = VoiceStartFrame.model_validate_json(raw)
     except asyncio.TimeoutError:
-        return await _close(
-            websocket, CLOSE_UNAUTHENTICATED, 'Authentication timed out'
-        )
+        await _close(websocket, CLOSE_UNAUTHENTICATED, 'Authentication timed out')
+        return
     except WebSocketDisconnect:
         return
     except (ValidationError, KeyError):
         # KeyError: the first frame was binary.
-        return await _close(
+        await _close(
             websocket, CLOSE_BAD_REQUEST, 'First frame must be a start message'
         )
+        return
 
     try:
         user_session = await authenticate_token(start.token)
     except WebSocketAuthError as exc:
-        return await _close(websocket, CLOSE_UNAUTHENTICATED, str(exc))
+        await _close(websocket, CLOSE_UNAUTHENTICATED, str(exc))
+        return
 
     try:
         user_id = uuid.UUID(str(user_session.user_id))
     except ValueError:
-        return await _close(
+        await _close(
             websocket, CLOSE_FORBIDDEN, 'Voice sessions require an end-user identity'
         )
+        return
 
     try:
         chatbot = await _require_chattable_chatbot(chatbot_service, chatbot_id)
@@ -120,22 +122,26 @@ async def chatbot_voice_session(
             chatbot, user_id, start.session_id, start.config
         )
     except (ChatbotNotFoundError, ChatSessionNotFoundError) as exc:
-        return await _close(websocket, CLOSE_NOT_FOUND, str(exc))
+        await _close(websocket, CLOSE_NOT_FOUND, str(exc))
+        return
     except UnknownChatUserError:
-        return await _close(
+        await _close(
             websocket,
             CLOSE_FORBIDDEN,
             'Your credential is not associated with a wavefront user',
         )
+        return
     except VoiceSessionError as exc:
-        return await _close(websocket, CLOSE_BAD_REQUEST, str(exc))
+        await _close(websocket, CLOSE_BAD_REQUEST, str(exc))
+        return
 
     try:
         await voice.agent.start()
     except Exception:
         # Provider errors can carry the base_url or a key prefix; logs only.
         logger.exception(f'Voice model failed to connect for chatbot {chatbot_id}')
-        return await _close(websocket, CLOSE_INTERNAL_ERROR, MODEL_FAILURE_MESSAGE)
+        await _close(websocket, CLOSE_INTERNAL_ERROR, MODEL_FAILURE_MESSAGE)
+        return
 
     try:
         await websocket.send_json(

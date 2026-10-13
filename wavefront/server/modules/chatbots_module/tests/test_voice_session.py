@@ -405,8 +405,13 @@ class TestBridge:
             websocket.incoming.put_nowait({'type': 'websocket.disconnect'})
 
         hangup = asyncio.create_task(hang_up_after_events())
-        await asyncio.wait_for(_service().bridge(websocket, agent, recorder), timeout=2)
-        await hangup
+        try:
+            await asyncio.wait_for(
+                _service().bridge(websocket, agent, recorder), timeout=2
+            )
+        finally:
+            hangup.cancel()
+            await asyncio.gather(hangup, return_exceptions=True)
 
         assert agent.audio == [b'pcm']
         assert agent.texts == ['typed']
