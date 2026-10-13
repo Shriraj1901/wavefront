@@ -1934,7 +1934,7 @@ wheels = [
 
 [[package]]
 name = "flo-ai"
-version = "1.1.14"
+version = "1.1.15"
 source = { editable = "../../flo_ai" }
 dependencies = [
     { name = "aiohttp" },
@@ -1960,10 +1960,6 @@ dependencies = [
     { name = "python-docx" },
     { name = "pyyaml" },
     { name = "xlrd" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f9/f8/4ce09a73734b50504c9abefaad0261bc5d385cdd3ecd160b624aa724b40a/flo_ai-1.1.15.tar.gz", hash = "sha256:928412bd11ecaf738cdd13f88d422ccc52f9214e82018fc2986249049dfe08db", size = 177293, upload-time = "2026-10-01T09:38:58.188Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/1b/273fcec677725984c191c6c54b5a6afe27a936b86d37d154ec5539204004/flo_ai-1.1.15-py3-none-any.whl", hash = "sha256:8008a17aabbba32786a65f817a2ed8fc6caa47c478fd99b203dcec568204a3ad", size = 214675, upload-time = "2026-10-01T09:38:56.936Z" },
 ]
 
 [package.optional-dependencies]
