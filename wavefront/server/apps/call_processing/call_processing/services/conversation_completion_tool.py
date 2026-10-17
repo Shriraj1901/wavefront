@@ -6,7 +6,7 @@ Provides LLM-callable conversation ending capabilities
 
 from typing import Dict, Any, Callable
 from pipecat.services.llm_service import FunctionCallParams
-from pipecat.frames.frames import TTSSpeakFrame, EndTaskFrame
+from pipecat.frames.frames import TTSSpeakFrame, EndWorkerFrame
 from pipecat.processors.frame_processor import FrameDirection
 from call_processing.log.logger import logger
 
@@ -22,8 +22,8 @@ class ConversationCompletionToolFactory:
         Create conversation completion tool function with captured context
 
         Args:
-            task_container: Dictionary containing PipelineTask (populated after task creation)
-                           Format: {'task': PipelineTask | None}
+            task_container: Dictionary containing PipelineWorker (populated after task creation)
+                           Format: {'task': PipelineWorker | None}
 
         Returns:
             Async function compatible with Pipecat's function calling
@@ -66,7 +66,7 @@ class ConversationCompletionToolFactory:
                 await params.llm.push_frame(TTSSpeakFrame(farewell_message))
 
                 # End the conversation
-                await params.llm.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
+                await params.llm.push_frame(EndWorkerFrame(), FrameDirection.UPSTREAM)
 
                 logger.info('Conversation ended by LLM decision')
 

@@ -93,6 +93,9 @@ class STTServiceFactory:
             'api_key': api_key,
             'encoding': parameters.get('encoding', 'linear16'),
         }
+        if parameters.get('base_url'):
+            # e.g. 'api.eu.deepgram.com' for EU-region projects; scheme optional
+            kwargs['base_url'] = parameters['base_url']
         if 'sample_rate' in parameters:
             kwargs['sample_rate'] = parameters['sample_rate']
         else:
@@ -122,10 +125,31 @@ class STTServiceFactory:
         'te': Language.TE_IN,
     }
 
+    SARVAM_DEFAULT_MODEL = 'saaras:v4'
+
+    # Models pipecat 1.x no longer accepts (it raises ValueError at construction),
+    # mapped to the current model and the mode that keeps their behaviour.
+    # saaras:v2.5 was speech-to-English translation; saarika:v2.5 transcription.
+    SARVAM_LEGACY_MODELS = {
+        'saarika:v2.5': ('saaras:v4', None),
+        'saaras:v2.5': ('saaras:v4', 'translate'),
+    }
+
     @staticmethod
     def _create_sarvam_stt(api_key: str, parameters: Dict[str, Any]):
         """Create Sarvam STT service"""
-        settings_kwargs: Dict[str, Any] = {}
+        model = parameters.get('model') or STTServiceFactory.SARVAM_DEFAULT_MODEL
+        mode = parameters.get('mode')
+        if model in STTServiceFactory.SARVAM_LEGACY_MODELS:
+            legacy_model = model
+            model, legacy_mode = STTServiceFactory.SARVAM_LEGACY_MODELS[legacy_model]
+            mode = mode or legacy_mode
+            logger.warning(
+                f"Sarvam STT model '{legacy_model}' is no longer supported, using "
+                f"'{model}' (mode={mode or 'default'}). Update the agent's STT model."
+            )
+
+        settings_kwargs: Dict[str, Any] = {'model': model}
 
         if 'language' in parameters and parameters['language']:
             lang_code = parameters['language']
@@ -140,16 +164,15 @@ class STTServiceFactory:
         if 'high_vad_sensitivity' in parameters:
             settings_kwargs['high_vad_sensitivity'] = parameters['high_vad_sensitivity']
 
-        model = parameters.get('model', 'saarika:v2.5')
         sample_rate = parameters.get('sample_rate', 8000)
 
         logger.info(f'Sarvam STT config: model={model}, sample_rate={sample_rate}')
 
         return SarvamSTTService(
             api_key=api_key,
-            model=model,
+            mode=mode,
             sample_rate=sample_rate,
-            settings=SarvamSTTSettings(**settings_kwargs) if settings_kwargs else None,
+            settings=SarvamSTTSettings(**settings_kwargs),
         )
 
     # Mapping of short language codes to ElevenLabs ISO-639-3 language codes
@@ -184,7 +207,8 @@ class STTServiceFactory:
     @staticmethod
     def _create_elevenlabs_stt(api_key: str, parameters: Dict[str, Any]):
         """Create ElevenLabs Realtime STT service (WebSocket streaming, scribe_v2_realtime)"""
-        settings_kwargs: Dict[str, Any] = {}
+        model = parameters.get('model', 'scribe_v2_realtime')
+        settings_kwargs: Dict[str, Any] = {'model': model}
 
         if 'language' in parameters and parameters['language']:
             lang_code = parameters['language']
@@ -196,18 +220,14 @@ class STTServiceFactory:
                     f"Unknown ElevenLabs language '{lang_code}', skipping (auto-detect will be used)"
                 )
 
-        model = parameters.get('model', 'scribe_v2_realtime')
         sample_rate = parameters.get('sample_rate', 8000)
 
         logger.info(f'ElevenLabs STT config: model={model}, sample_rate={sample_rate}')
 
         return ElevenLabsRealtimeSTTService(
             api_key=api_key,
-            model=model,
             sample_rate=sample_rate,
-            settings=ElevenLabsRealtimeSTTSettings(**settings_kwargs)
-            if settings_kwargs
-            else None,
+            settings=ElevenLabsRealtimeSTTSettings(**settings_kwargs),
         )
 
     @staticmethod

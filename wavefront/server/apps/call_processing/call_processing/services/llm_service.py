@@ -4,7 +4,7 @@ LLM (Language Model) service factory
 Supports multiple providers: OpenAI, Anthropic, Google, etc.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Iterable
 from call_processing.log.logger import logger
 
 # Pipecat LLM services
@@ -14,6 +14,28 @@ from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.azure.llm import AzureLLMService
 # Add more as needed
+
+# pipecat 0.0.x gave a function call 10s before answering the LLM with an empty
+# result; 1.x defaults to no timeout, and at the deadline cancels the handler
+# (CancelledError) and lets the LLM report the failure. Keep the 10s bound so a
+# slow tool cannot hold the caller in silence indefinitely.
+FUNCTION_CALL_TIMEOUT_SECS = 10.0
+
+# Keys each provider's Settings accepts from the stored `parameters` dict. Settings
+# are dataclasses, so an unlisted key would raise TypeError at construction.
+OPENAI_SETTINGS_KEYS = (
+    'temperature',
+    'max_completion_tokens',
+    'top_p',
+    'frequency_penalty',
+    'presence_penalty',
+    'seed',
+)
+GOOGLE_SETTINGS_KEYS = ('temperature', 'max_tokens', 'top_p', 'top_k')
+
+
+def _pick(parameters: Dict[str, Any], keys: Iterable[str]) -> Dict[str, Any]:
+    return {key: parameters[key] for key in keys if key in parameters}
 
 
 class LLMServiceFactory:
@@ -76,152 +98,87 @@ class LLMServiceFactory:
     @staticmethod
     def _create_openai_llm(api_key: str, model: str, parameters: Dict[str, Any]):
         """Create OpenAI LLM service"""
-        # Build InputParams from the parameters dict
-        params_dict = {}
-
-        if 'temperature' in parameters:
-            params_dict['temperature'] = parameters['temperature']
-        if 'max_completion_tokens' in parameters:
-            params_dict['max_completion_tokens'] = parameters['max_completion_tokens']
-        if 'top_p' in parameters:
-            params_dict['top_p'] = parameters['top_p']
-        if 'frequency_penalty' in parameters:
-            params_dict['frequency_penalty'] = parameters['frequency_penalty']
-        if 'presence_penalty' in parameters:
-            params_dict['presence_penalty'] = parameters['presence_penalty']
-        if 'seed' in parameters:
-            params_dict['seed'] = parameters['seed']
-        if 'service_tier' in parameters:
-            params_dict['service_tier'] = parameters['service_tier']
-
-        # Create InputParams object
-        input_params = BaseOpenAILLMService.InputParams(**params_dict)
+        settings_kwargs = _pick(parameters, OPENAI_SETTINGS_KEYS)
 
         logger.info(
-            f"OpenAI LLM config: model={model}, temp={params_dict.get('temperature', 'default')}"
+            f"OpenAI LLM config: model={model}, temp={settings_kwargs.get('temperature', 'default')}"
         )
 
-        return OpenAILLMService(api_key=api_key, model=model, params=input_params)
+        return OpenAILLMService(
+            api_key=api_key,
+            # An init argument, not a Settings field
+            service_tier=parameters.get('service_tier'),
+            settings=OpenAILLMService.Settings(model=model, **settings_kwargs),
+            function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
+        )
 
     @staticmethod
     def _create_openai_compatible_llm(
         api_key: str, model: str, parameters: Dict[str, Any], base_url: str
     ):
         """Create a BaseOpenAILLMService for OpenAI-compatible endpoints"""
-        params_dict = {}
-
-        if 'temperature' in parameters:
-            params_dict['temperature'] = parameters['temperature']
-        if 'max_completion_tokens' in parameters:
-            params_dict['max_completion_tokens'] = parameters['max_completion_tokens']
-        if 'top_p' in parameters:
-            params_dict['top_p'] = parameters['top_p']
-        if 'frequency_penalty' in parameters:
-            params_dict['frequency_penalty'] = parameters['frequency_penalty']
-        if 'presence_penalty' in parameters:
-            params_dict['presence_penalty'] = parameters['presence_penalty']
-        if 'seed' in parameters:
-            params_dict['seed'] = parameters['seed']
-
-        input_params = BaseOpenAILLMService.InputParams(**params_dict)
+        settings_kwargs = _pick(parameters, OPENAI_SETTINGS_KEYS)
 
         logger.info(
-            f"OpenAI-compatible LLM config: model={model}, base_url={base_url}, temp={params_dict.get('temperature', 'default')}"
+            f"OpenAI-compatible LLM config: model={model}, base_url={base_url}, temp={settings_kwargs.get('temperature', 'default')}"
         )
 
         return BaseOpenAILLMService(
-            api_key=api_key, model=model, base_url=base_url, params=input_params
+            api_key=api_key,
+            base_url=base_url,
+            settings=BaseOpenAILLMService.Settings(model=model, **settings_kwargs),
+            function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
         )
 
     @staticmethod
     def _create_google_llm(api_key: str, model: str, parameters: Dict[str, Any]):
         """Create Google LLM service"""
-        # Build InputParams from the parameters dict
-        params_dict = {}
-
-        if 'temperature' in parameters:
-            params_dict['temperature'] = parameters['temperature']
-        if 'max_tokens' in parameters:
-            params_dict['max_tokens'] = parameters['max_tokens']
-        if 'top_p' in parameters:
-            params_dict['top_p'] = parameters['top_p']
-        if 'top_k' in parameters:
-            params_dict['top_k'] = parameters['top_k']
-
-        # Create InputParams object
-        input_params = GoogleLLMService.InputParams(**params_dict)
+        settings_kwargs = _pick(parameters, GOOGLE_SETTINGS_KEYS)
 
         logger.info(
-            f"Google LLM config: model={model}, temp={params_dict.get('temperature', 'default')}"
+            f"Google LLM config: model={model}, temp={settings_kwargs.get('temperature', 'default')}"
         )
 
-        return GoogleLLMService(api_key=api_key, model=model, params=input_params)
+        return GoogleLLMService(
+            api_key=api_key,
+            settings=GoogleLLMService.Settings(model=model, **settings_kwargs),
+            function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
+        )
 
     @staticmethod
     def _create_groq_llm(api_key: str, model: str, parameters: Dict[str, Any]):
         """Create Groq LLM service"""
-        # Build InputParams from the parameters dict
-        params_dict = {}
-
-        if 'temperature' in parameters:
-            params_dict['temperature'] = parameters['temperature']
-        if 'max_completion_tokens' in parameters:
-            params_dict['max_completion_tokens'] = parameters['max_completion_tokens']
-        if 'top_p' in parameters:
-            params_dict['top_p'] = parameters['top_p']
-        if 'frequency_penalty' in parameters:
-            params_dict['frequency_penalty'] = parameters['frequency_penalty']
-        if 'presence_penalty' in parameters:
-            params_dict['presence_penalty'] = parameters['presence_penalty']
-        if 'seed' in parameters:
-            params_dict['seed'] = parameters['seed']
-        if 'service_tier' in parameters:
-            params_dict['service_tier'] = parameters['service_tier']
-
-        # Create InputParams object
-        input_params = GroqLLMService.InputParams(**params_dict)
+        settings_kwargs = _pick(parameters, OPENAI_SETTINGS_KEYS)
 
         logger.info(
-            f"Groq LLM config: model={model}, temp={params_dict.get('temperature', 'default')}"
+            f"Groq LLM config: model={model}, temp={settings_kwargs.get('temperature', 'default')}"
         )
 
-        return GroqLLMService(api_key=api_key, model=model, params=input_params)
+        return GroqLLMService(
+            api_key=api_key,
+            # An init argument, not a Settings field
+            service_tier=parameters.get('service_tier'),
+            settings=GroqLLMService.Settings(model=model, **settings_kwargs),
+            function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
+        )
 
     @staticmethod
     def _create_azure_llm(
         api_key: str, model: str, parameters: Dict[str, Any], base_url: str = None
     ):
         """Create Azure OpenAI LLM service"""
-        # Extract Azure specific params
-        # api_version = parameters.get('api_version')
-
-        # Build InputParams from the parameters dict
-        params_dict = {}
-
-        if 'temperature' in parameters:
-            params_dict['temperature'] = parameters['temperature']
-        if 'max_completion_tokens' in parameters:
-            params_dict['max_completion_tokens'] = parameters['max_completion_tokens']
-        if 'top_p' in parameters:
-            params_dict['top_p'] = parameters['top_p']
-        if 'frequency_penalty' in parameters:
-            params_dict['frequency_penalty'] = parameters['frequency_penalty']
-        if 'presence_penalty' in parameters:
-            params_dict['presence_penalty'] = parameters['presence_penalty']
-        if 'seed' in parameters:
-            params_dict['seed'] = parameters['seed']
-
-        # Create InputParams object
-        input_params = BaseOpenAILLMService.InputParams(**params_dict)
+        # api_version is deliberately not passed: it is deprecated since pipecat
+        # 1.8.0. An endpoint ending in /openai/v1 selects the v1 API surface;
+        # any other endpoint gets pipecat's dated default (2025-04-01-preview).
+        settings_kwargs = _pick(parameters, OPENAI_SETTINGS_KEYS)
 
         logger.info(
-            f"Azure OpenAI LLM config: model={model}, endpoint={base_url}, temp={params_dict.get('temperature', 'default')}"
+            f"Azure OpenAI LLM config: model={model}, endpoint={base_url}, temp={settings_kwargs.get('temperature', 'default')}"
         )
 
         return AzureLLMService(
             api_key=api_key,
             endpoint=base_url,
-            model=model,
-            # api_version=api_version,
-            params=input_params,
+            settings=AzureLLMService.Settings(model=model, **settings_kwargs),
+            function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
         )

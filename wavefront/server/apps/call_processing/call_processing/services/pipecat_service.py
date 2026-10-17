@@ -20,6 +20,8 @@ from pipecat.utils.tracing.setup import setup_tracing
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -32,8 +34,7 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     AssistantTurnStoppedMessage,
@@ -60,6 +61,7 @@ from pipecat.turns.user_stop import (
     TurnAnalyzerUserTurnStopStrategy,
     #  TranscriptionUserTurnStopStrategy
 )
+from pipecat.workers.runner import WorkerRunner
 from call_processing.services.stt_service import STTServiceFactory
 from call_processing.services.tts_service import TTSServiceFactory
 from call_processing.services.llm_service import LLMServiceFactory
@@ -423,6 +425,22 @@ class PipecatService:
                     MuteUntilFirstBotCompleteUserMuteStrategy(),
                     FunctionCallUserMuteStrategy(),
                 ],
+                # VAD runs here since pipecat 1.0 removed TransportParams.vad_analyzer
+                # (an unknown transport param is silently ignored). The aggregator
+                # broadcasts VAD frames upstream too, so STT still receives them.
+                vad_analyzer=SileroVADAnalyzer(
+                    params=VADParams(
+                        confidence=0.7,
+                        start_secs=0.2,
+                        stop_secs=0.2,  # Short, so smart turn detection decides end of turn
+                        min_volume=0.6,
+                    ),
+                ),
+                # Since 1.x, a user turn with no transcript that interrupted the bot
+                # triggers a "please repeat" inference via a developer-role message.
+                # Keep the 0.0.x behaviour (no answer) until that is verified on
+                # every LLM provider we support.
+                empty_user_turn=None,
             ),
         )
 
@@ -495,8 +513,8 @@ class PipecatService:
             else customer_number
         )
 
-        # Create pipeline task with Twilio-specific parameters
-        task = PipelineTask(
+        # Create pipeline worker with Twilio-specific parameters
+        task = PipelineWorker(
             pipeline,
             params=PipelineParams(
                 audio_in_sample_rate=8000,  # Twilio uses 8kHz
@@ -546,7 +564,8 @@ class PipecatService:
             if not phrases:
                 return
             phrase = random.choice(phrases)
-            await task.queue_frame(TTSSpeakFrame(phrase))
+            # Filler is audio only; keep it out of the LLM context and transcript.
+            await task.queue_frame(TTSSpeakFrame(phrase, append_to_context=False))
 
         @task.event_handler('on_pipeline_finished')
         async def on_pipeline_finished(task, frame):
@@ -580,6 +599,15 @@ class PipecatService:
                 )
                 call_evaluation_tasks.append(t)
 
+        # WorkerRunner runs the worker in its own task and swallows its
+        # exceptions, so pipeline errors no longer reach the except block below.
+        @task.event_handler('on_pipeline_error')
+        async def on_pipeline_error(task, frame):
+            logger.error(
+                f"Pipeline error for agent {agent_config['name']}: {frame.error} "
+                f'(processor usable: {getattr(frame.processor, "is_usable", "n/a")})'
+            )
+
         @transport.event_handler('on_client_connected')
         async def on_client_connected(transport, client):
             logger.info(f"Client connected for agent: {agent_config['name']}")
@@ -593,9 +621,10 @@ class PipecatService:
             await task.cancel()
 
         # Run pipeline
-        runner = PipelineRunner(handle_sigint=False)
+        runner = WorkerRunner(handle_sigint=False)
         try:
-            await runner.run(task)
+            await runner.add_workers(task)
+            await runner.run()
         except Exception as e:
             logger.error(
                 f"Pipeline error for agent {agent_config['name']}: {e}",

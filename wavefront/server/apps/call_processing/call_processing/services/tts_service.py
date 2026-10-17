@@ -188,16 +188,47 @@ class TTSServiceFactory:
         'te': Language.TE_IN,
     }
 
+    SARVAM_DEFAULT_MODEL = 'bulbul:v3'
+
+    # Sarvam's API rejects bulbul:v2 ("has been deprecated. Please use 'bulbul:v3'"),
+    # so a stored v2 config is moved forward instead of failing every call.
+    SARVAM_LEGACY_MODELS = {'bulbul:v2': 'bulbul:v3'}
+
+    # bulbul:v2's speakers, none of which exist on bulbul:v3 / v3-beta. Spelled out
+    # rather than read from pipecat's SarvamTTSSpeakerV2, which goes with v2 in 2.0.
+    SARVAM_V2_ONLY_SPEAKERS = frozenset(
+        {'anushka', 'abhilash', 'manisha', 'vidya', 'arya', 'karun', 'hitesh'}
+    )
+
+    @staticmethod
+    def _sarvam_voice(voice_id: str | None) -> str | None:
+        """Return voice_id, or None for a bulbul:v2-only speaker v3 cannot use."""
+        if voice_id in TTSServiceFactory.SARVAM_V2_ONLY_SPEAKERS:
+            logger.warning(
+                f"Sarvam speaker '{voice_id}' only exists on the retired bulbul:v2 "
+                f'model; using the bulbul:v3 default speaker. Pick a v3 voice for '
+                f'this agent.'
+            )
+            return None
+        return voice_id
+
     @staticmethod
     def _create_sarvam_tts(api_key: str, voice_id: str, parameters: Dict[str, Any]):
         """Create Sarvam TTS service (WebSocket-based streaming)"""
-        model = parameters.get('model', 'bulbul:v2')
+        model = parameters.get('model') or TTSServiceFactory.SARVAM_DEFAULT_MODEL
+        if model in TTSServiceFactory.SARVAM_LEGACY_MODELS:
+            legacy_model = model
+            model = TTSServiceFactory.SARVAM_LEGACY_MODELS[legacy_model]
+            logger.warning(
+                f"Sarvam TTS model '{legacy_model}' is no longer served, using "
+                f"'{model}'. Update the agent's TTS model."
+            )
         sample_rate = parameters.get('sample_rate')
 
-        settings_kwargs: Dict[str, Any] = {
-            'voice': voice_id,
-            'model': model,
-        }
+        settings_kwargs: Dict[str, Any] = {'model': model}
+        voice = TTSServiceFactory._sarvam_voice(voice_id)
+        if voice:
+            settings_kwargs['voice'] = voice
 
         if 'language' in parameters and parameters['language']:
             lang_code = parameters['language']
@@ -218,7 +249,7 @@ class TTSServiceFactory:
         if 'temperature' in parameters:
             settings_kwargs['temperature'] = parameters['temperature']
 
-        logger.info(f'Sarvam TTS config: voice={voice_id}, model={model}')
+        logger.info(f"Sarvam TTS config: voice={voice or 'default'}, model={model}")
 
         return SarvamTTSService(
             api_key=api_key,
@@ -316,8 +347,9 @@ class TTSServiceFactory:
             return TTSUpdateSettingsFrame(delta=AzureTTSSettings(**delta_kwargs))
         elif provider == 'sarvam':
             delta_kwargs = {}
-            if voice_id:
-                delta_kwargs['voice'] = voice_id
+            voice = TTSServiceFactory._sarvam_voice(voice_id)
+            if voice:
+                delta_kwargs['voice'] = voice
             lang_enum = TTSServiceFactory.SARVAM_LANGUAGE_MAP.get(lang_code)
             if lang_enum:
                 delta_kwargs['language'] = lang_enum

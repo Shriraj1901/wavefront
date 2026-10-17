@@ -68,7 +68,7 @@ export interface CartesiaParameters {
 
 // Sarvam TTS specific parameters
 export interface SarvamTtsParameters {
-  model?: string; // default: 'bulbul:v2'
+  model?: string; // default: 'bulbul:v3'
   language?: string;
   pitch?: number; // -0.75 to 0.75
   pace?: number; // 0.3 to 3.0
