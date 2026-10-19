@@ -6,6 +6,7 @@ call. Constructors open no connections, so nothing here touches the network.
 """
 
 import importlib
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ PIPECAT_IMPORTS = [
     ('pipecat.adapters.schemas.function_schema', 'FunctionSchema'),
     ('pipecat.adapters.schemas.tools_schema', 'ToolsSchema'),
     ('pipecat.audio.dtmf.types', 'KeypadEntry'),
+    ('pipecat.audio.turn.smart_turn.base_smart_turn', 'SmartTurnParams'),
     ('pipecat.audio.turn.smart_turn.local_smart_turn_v3', 'LocalSmartTurnAnalyzerV3'),
     ('pipecat.audio.utils', 'create_stream_resampler'),
     ('pipecat.audio.utils', 'pcm_to_ulaw'),
@@ -32,9 +34,17 @@ PIPECAT_IMPORTS = [
     ('pipecat.audio.vad.silero', 'SileroVADAnalyzer'),
     ('pipecat.audio.vad.vad_analyzer', 'VADParams'),
     ('pipecat.frames.frames', 'EndWorkerFrame'),
+    ('pipecat.frames.frames', 'Frame'),
+    ('pipecat.frames.frames', 'InterimTranscriptionFrame'),
+    ('pipecat.frames.frames', 'TranscriptionFrame'),
     ('pipecat.frames.frames', 'TTSSpeakFrame'),
     ('pipecat.frames.frames', 'STTUpdateSettingsFrame'),
     ('pipecat.frames.frames', 'TTSUpdateSettingsFrame'),
+    ('pipecat.observers.speaking_observer', 'SpeakingObserver'),
+    ('pipecat.observers.speaking_observer', 'SpeechEvent'),
+    ('pipecat.observers.speaking_observer', 'SpeechEventKind'),
+    ('pipecat.observers.user_bot_latency_observer', 'LatencyBreakdown'),
+    ('pipecat.observers.user_bot_latency_observer', 'UserBotLatencyObserver'),
     ('pipecat.pipeline.pipeline', 'Pipeline'),
     ('pipecat.pipeline.worker', 'PipelineParams'),
     ('pipecat.pipeline.worker', 'PipelineWorker'),
@@ -58,8 +68,12 @@ PIPECAT_IMPORTS = [
     ('pipecat.transports.base_transport', 'BaseTransport'),
     ('pipecat.transports.websocket.fastapi', 'FastAPIWebsocketParams'),
     ('pipecat.transports.websocket.fastapi', 'FastAPIWebsocketTransport'),
+    ('pipecat.turns.empty_user_turn', 'EmptyUserTurnConfig'),
+    ('pipecat.turns.types', 'ProcessFrameResult'),
+    ('pipecat.turns.user_mute', 'BaseUserMuteStrategy'),
     ('pipecat.turns.user_mute', 'FunctionCallUserMuteStrategy'),
     ('pipecat.turns.user_mute', 'MuteUntilFirstBotCompleteUserMuteStrategy'),
+    ('pipecat.turns.user_start', 'TranscriptionUserTurnStartStrategy'),
     ('pipecat.turns.user_start', 'VADUserTurnStartStrategy'),
     ('pipecat.turns.user_stop', 'TurnAnalyzerUserTurnStopStrategy'),
     ('pipecat.turns.user_turn_strategies', 'UserTurnStrategies'),
@@ -122,6 +136,34 @@ async def test_llm_ignores_keys_its_provider_has_no_setting_for():
     llm = LLMServiceFactory.create_llm_service(config)
 
     assert llm.settings.max_tokens == 200
+
+
+@pytest.mark.parametrize(
+    ('config', 'sends_developer_role'),
+    [
+        (llm_config('openai'), True),
+        (llm_config('openai', base_url='https://llm.example.com/v1'), False),
+        (llm_config('azure_openai', base_url='https://example.openai.azure.com'), True),
+        (llm_config('groq'), False),
+    ],
+    ids=['openai', 'openai-compatible', 'azure', 'groq'],
+)
+async def test_developer_role_sent_only_where_supported(config, sends_developer_role):
+    # Empty-turn recovery injects a developer-role message.
+    llm = LLMServiceFactory.create_llm_service(config)
+
+    assert llm.supports_developer_role is sends_developer_role
+
+
+def test_pipecat_accepts_the_options_call_processing_passes():
+    from pipecat.pipeline.worker import PipelineWorker
+    from pipecat.services.llm_service import LLMService
+
+    worker_params = inspect.signature(PipelineWorker.__init__).parameters
+    register_params = inspect.signature(LLMService.register_function).parameters
+
+    assert {'enable_rtvi', 'observers'} <= set(worker_params)
+    assert {'cancel_on_interruption', 'timeout_secs'} <= set(register_params)
 
 
 async def test_openai_service_tier_is_an_init_argument():
@@ -192,6 +234,44 @@ def test_stt_language_update_frame(provider):
     assert frame is not None and frame.delta is not None
 
 
+STT_SERVICE_CLASSES = {
+    'deepgram': 'DeepgramSTTService',
+    'sarvam': 'SarvamSTTService',
+    'elevenlabs': 'ElevenLabsRealtimeSTTService',
+    'azure': 'AzureSTTService',
+}
+
+
+def created_stt_kwargs(provider, **parameters):
+    with patch(
+        f'call_processing.services.stt_service.{STT_SERVICE_CLASSES[provider]}'
+    ) as service:
+        STTServiceFactory.create_stt_service(stt_config(provider, **parameters))
+    return service.call_args.kwargs
+
+
+@pytest.mark.parametrize('provider', list(STT_SERVICE_CLASSES))
+def test_stt_ttfs_p99_latency_reaches_the_service(provider):
+    assert created_stt_kwargs(provider, ttfs_p99_latency=0.5)['ttfs_p99_latency'] == 0.5
+
+
+@pytest.mark.parametrize('provider', list(STT_SERVICE_CLASSES))
+@pytest.mark.parametrize('stored', [None, 0, -1, 'soon'])
+def test_stt_ttfs_p99_latency_left_to_pipecat_unless_valid(provider, stored):
+    # Omitted, each pipecat service uses its provider's measured default; a
+    # non-positive value would end turns before their transcript lands.
+    assert 'ttfs_p99_latency' not in created_stt_kwargs(
+        provider, ttfs_p99_latency=stored
+    )
+
+
+def test_deepgram_stt_forwards_endpointing():
+    kwargs = created_stt_kwargs('deepgram', endpointing=300, utterance_end_ms=1000)
+
+    assert kwargs['settings'].endpointing == 300
+    assert kwargs['settings'].utterance_end_ms == 1000
+
+
 # --- TTS ---------------------------------------------------------------------
 
 
@@ -226,6 +306,15 @@ def test_sarvam_tts_language_update_drops_a_v2_speaker():
     frame = TTSServiceFactory.create_language_update_frame('sarvam', 'hi', 'anushka')
 
     assert frame.delta.voice != 'anushka'
+
+
+@pytest.mark.parametrize(('stored', 'requested'), [(None, 8000), (16000, 16000)])
+def test_sarvam_tts_requests_telephony_rate_audio(stored, requested):
+    parameters = {'sample_rate': stored} if stored else {}
+    with patch('call_processing.services.tts_service.SarvamTTSService') as service:
+        TTSServiceFactory.create_tts_service(tts_config('sarvam', **parameters))
+
+    assert service.call_args.kwargs['sample_rate'] == requested
 
 
 @pytest.mark.parametrize(

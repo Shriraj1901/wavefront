@@ -53,7 +53,9 @@ export interface DeepgramSttParameters {
   smart_format?: boolean;
   punctuate?: boolean;
   profanity_filter?: boolean;
-  vad_events?: boolean;
+  vad_events?: boolean; // no effect: turn-taking runs its own VAD
+  utterance_end_ms?: number;
+  ttfs_p99_latency?: number; // seconds; empty = provider default
 }
 
 // Sarvam STT specific parameters
@@ -62,6 +64,7 @@ export interface SarvamSttParameters {
   language?: string;
   vad_signals?: boolean;
   high_vad_sensitivity?: boolean;
+  ttfs_p99_latency?: number; // seconds; empty = provider default
 }
 
 // ElevenLabs STT specific parameters
@@ -69,10 +72,12 @@ export interface ElevenLabsSttParameters {
   model?: string; // default: 'scribe_v2_realtime'
   language?: string; // ISO-639-1 code e.g. 'en', 'hi'
   sample_rate?: number; // default: 8000
+  ttfs_p99_latency?: number; // seconds; empty = provider default
 }
 
 // Azure STT specific parameters
 export interface AzureSttParameters {
   endpoint_id?: string; // custom model endpoint ID
   sample_rate?: number;
+  ttfs_p99_latency?: number; // seconds; empty = provider default
 }

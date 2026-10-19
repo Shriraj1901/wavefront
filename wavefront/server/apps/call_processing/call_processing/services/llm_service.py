@@ -4,6 +4,7 @@ LLM (Language Model) service factory
 Supports multiple providers: OpenAI, Anthropic, Google, etc.
 """
 
+import math
 from typing import Dict, Any, Iterable
 from call_processing.log.logger import logger
 
@@ -21,6 +22,27 @@ from pipecat.services.azure.llm import AzureLLMService
 # slow tool cannot hold the caller in silence indefinitely.
 FUNCTION_CALL_TIMEOUT_SECS = 10.0
 
+# Head-room over a tool's own HTTP timeout, so a slow request ends with the
+# tool's clean timeout result instead of being cancelled mid-flight.
+TOOL_TIMEOUT_MARGIN_SECS = 2.0
+
+
+def function_call_timeout_secs(tool_timeout: Any) -> float:
+    """Handler deadline for a tool whose own request timeout is tool_timeout.
+
+    Never shorter than FUNCTION_CALL_TIMEOUT_SECS: HTTP timeouts apply per phase
+    (connect, read, ...), so a call can legitimately run past its configured
+    timeout, and only tools configured to wait longer get a longer deadline.
+    """
+    try:
+        timeout = float(tool_timeout)
+    except (TypeError, ValueError):
+        return FUNCTION_CALL_TIMEOUT_SECS
+    if not math.isfinite(timeout) or timeout <= 0:
+        return FUNCTION_CALL_TIMEOUT_SECS
+    return max(FUNCTION_CALL_TIMEOUT_SECS, timeout + TOOL_TIMEOUT_MARGIN_SECS)
+
+
 # Keys each provider's Settings accepts from the stored `parameters` dict. Settings
 # are dataclasses, so an unlisted key would raise TypeError at construction.
 OPENAI_SETTINGS_KEYS = (
@@ -36,6 +58,17 @@ GOOGLE_SETTINGS_KEYS = ('temperature', 'max_tokens', 'top_p', 'top_k')
 
 def _pick(parameters: Dict[str, Any], keys: Iterable[str]) -> Dict[str, Any]:
     return {key: parameters[key] for key in keys if key in parameters}
+
+
+def _send_developer_messages_as_user(service: BaseOpenAILLMService):
+    """Have the service send "developer"-role messages as "user" messages.
+
+    For providers that may reject the developer role; pipecat injects it for
+    empty-turn recovery. Set on the instance, which pipecat reads per request,
+    rather than through a subclass, which would rename the service in traces.
+    """
+    service.supports_developer_role = False
+    return service
 
 
 class LLMServiceFactory:
@@ -123,11 +156,14 @@ class LLMServiceFactory:
             f"OpenAI-compatible LLM config: model={model}, base_url={base_url}, temp={settings_kwargs.get('temperature', 'default')}"
         )
 
-        return BaseOpenAILLMService(
-            api_key=api_key,
-            base_url=base_url,
-            settings=BaseOpenAILLMService.Settings(model=model, **settings_kwargs),
-            function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
+        # Unknown server: it may not accept the developer role.
+        return _send_developer_messages_as_user(
+            BaseOpenAILLMService(
+                api_key=api_key,
+                base_url=base_url,
+                settings=BaseOpenAILLMService.Settings(model=model, **settings_kwargs),
+                function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
+            )
         )
 
     @staticmethod
@@ -154,12 +190,16 @@ class LLMServiceFactory:
             f"Groq LLM config: model={model}, temp={settings_kwargs.get('temperature', 'default')}"
         )
 
-        return GroqLLMService(
-            api_key=api_key,
-            # An init argument, not a Settings field
-            service_tier=parameters.get('service_tier'),
-            settings=GroqLLMService.Settings(model=model, **settings_kwargs),
-            function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
+        # pipecat's GroqLLMService keeps the OpenAI default of sending the
+        # developer role unconverted.
+        return _send_developer_messages_as_user(
+            GroqLLMService(
+                api_key=api_key,
+                # An init argument, not a Settings field
+                service_tier=parameters.get('service_tier'),
+                settings=GroqLLMService.Settings(model=model, **settings_kwargs),
+                function_call_timeout_secs=FUNCTION_CALL_TIMEOUT_SECS,
+            )
         )
 
     @staticmethod

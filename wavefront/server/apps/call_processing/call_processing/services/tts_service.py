@@ -189,6 +189,7 @@ class TTSServiceFactory:
     }
 
     SARVAM_DEFAULT_MODEL = 'bulbul:v3'
+    SARVAM_DEFAULT_SAMPLE_RATE = 8000
 
     # Sarvam's API rejects bulbul:v2 ("has been deprecated. Please use 'bulbul:v3'"),
     # so a stored v2 config is moved forward instead of failing every call.
@@ -223,7 +224,12 @@ class TTSServiceFactory:
                 f"Sarvam TTS model '{legacy_model}' is no longer served, using "
                 f"'{model}'. Update the agent's TTS model."
             )
-        sample_rate = parameters.get('sample_rate')
+        # Request telephony-rate audio. Left unset, pipecat asks for the model's
+        # default (24 kHz on bulbul:v3) and every chunk is resampled to 8 kHz.
+        sample_rate = (
+            parameters.get('sample_rate')
+            or TTSServiceFactory.SARVAM_DEFAULT_SAMPLE_RATE
+        )
 
         settings_kwargs: Dict[str, Any] = {'model': model}
         voice = TTSServiceFactory._sarvam_voice(voice_id)
@@ -249,7 +255,10 @@ class TTSServiceFactory:
         if 'temperature' in parameters:
             settings_kwargs['temperature'] = parameters['temperature']
 
-        logger.info(f"Sarvam TTS config: voice={voice or 'default'}, model={model}")
+        logger.info(
+            f"Sarvam TTS config: voice={voice or 'default'}, model={model}, "
+            f'sample_rate={sample_rate}'
+        )
 
         return SarvamTTSService(
             api_key=api_key,

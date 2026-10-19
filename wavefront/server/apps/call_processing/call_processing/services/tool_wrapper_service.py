@@ -6,11 +6,21 @@ functions that can be registered with the LLM for function calling.
 """
 
 import base64
-from typing import Dict, Any, List, Tuple, Callable, Optional
+from typing import Dict, Any, List, NamedTuple, Tuple, Callable, Optional
 import flo_lib.http as httpx
 
 from call_processing.log.logger import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
+
+
+class ToolRegistration(NamedTuple):
+    """A tool handler to register with the LLM"""
+
+    name: str
+    handler: Callable
+    # The tool's own request timeout as configured (after config overrides),
+    # or None for a tool that makes no request
+    request_timeout_secs: Any
 
 
 class ApiToolWrapper:
@@ -263,11 +273,10 @@ class ToolWrapperFactory:
 
                 logger.info(f"Tool '{tool_name}' execution result: {result}")
 
-                # Return result via callback if available
+                # The callback is the only way a result reaches the LLM;
+                # pipecat ignores the handler's return value.
                 if result_callback:
                     await result_callback(result)
-
-                return result
 
             except Exception as e:
                 error_msg = f"Error executing tool '{tool_name}': {str(e)}"
@@ -281,8 +290,6 @@ class ToolWrapperFactory:
                 if result_callback:
                     await result_callback(error_result)
 
-                return error_result
-
         # Set function metadata for Pipecat
         tool_function.__name__ = tool_name
         tool_function.__doc__ = tool_description
@@ -292,7 +299,7 @@ class ToolWrapperFactory:
     @staticmethod
     def create_all_tool_functions(
         agent_tools: List[Dict[str, Any]],
-    ) -> Tuple[List[FunctionSchema], List[Tuple[str, Callable]]]:
+    ) -> Tuple[List[FunctionSchema], List[ToolRegistration]]:
         """
         Create wrapper functions for all tools attached to an agent
 
@@ -304,7 +311,7 @@ class ToolWrapperFactory:
         Returns:
             Tuple containing:
             - function_schemas: List of FunctionSchema objects (for ToolsSchema)
-            - tool_registrations: List of (name, callable) tuples (for llm.register_function)
+            - tool_registrations: List of ToolRegistration (for llm.register_function)
         """
         function_schemas = []
         tool_registrations = []
@@ -361,7 +368,17 @@ class ToolWrapperFactory:
 
                 # Add to both lists
                 function_schemas.append(function_schema)
-                tool_registrations.append((tool['name'], callable_func))
+                tool_registrations.append(
+                    ToolRegistration(
+                        name=tool['name'],
+                        handler=callable_func,
+                        request_timeout_secs=(
+                            wrapper.timeout
+                            if isinstance(wrapper, ApiToolWrapper)
+                            else None
+                        ),
+                    )
+                )
 
                 logger.info(
                     f"Created wrapper for tool '{tool['name']}' (type: {tool['tool_type']})"

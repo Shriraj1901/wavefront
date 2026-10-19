@@ -10,18 +10,19 @@ import asyncio
 import random
 from call_processing.log.logger import logger
 from call_processing.services.call_evaluation_service import CallEvaluationService
+from call_processing.services.call_metrics import CallMetricsCollector
 from call_processing.services.tool_wrapper_service import ToolWrapperFactory
+from call_processing.services.turn_taking import create_context_aggregator
+from call_processing.services.voice_runtime_config import parse_voice_runtime_config
 from call_processing.utils import get_current_ist_time_str
 
 # Pipecat core imports
-from opentelemetry import context as otel_context
+from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.trace import NonRecordingSpan
 from pipecat.utils.tracing.setup import setup_tracing
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.adapters.schemas.function_schema import FunctionSchema
-from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -38,8 +39,6 @@ from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     AssistantTurnStoppedMessage,
-    LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
     UserTurnStoppedMessage,
 )
 
@@ -48,23 +47,13 @@ from pipecat.processors.aggregators.llm_response_universal import (
 #     ServiceSwitcherStrategyManual,
 # )
 from pipecat.transports.base_transport import BaseTransport
-from pipecat.turns.user_mute import (
-    FunctionCallUserMuteStrategy,
-    MuteUntilFirstBotCompleteUserMuteStrategy,
-)
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
-from pipecat.turns.user_start import (
-    VADUserTurnStartStrategy,
-    # MinWordsUserTurnStartStrategy,
-)
-from pipecat.turns.user_stop import (
-    TurnAnalyzerUserTurnStopStrategy,
-    #  TranscriptionUserTurnStopStrategy
-)
 from pipecat.workers.runner import WorkerRunner
 from call_processing.services.stt_service import STTServiceFactory
 from call_processing.services.tts_service import TTSServiceFactory
-from call_processing.services.llm_service import LLMServiceFactory
+from call_processing.services.llm_service import (
+    LLMServiceFactory,
+    function_call_timeout_secs,
+)
 
 # from call_processing.services.conversation_completion_tool import (
 #     ConversationCompletionToolFactory,
@@ -148,6 +137,10 @@ class PipecatService:
             f'Language config - supported: {supported_languages}, '
             f'default: {default_language}, multi-language: {is_multi_language}'
         )
+
+        # Per-agent turn-taking tuning (conversation_config.voice_runtime)
+        voice_runtime = parse_voice_runtime_config(agent_config)
+        logger.info(f'Voice runtime config: {voice_runtime.model_dump()}')
 
         # Track language state for multi-language conversations
         language_state = {
@@ -289,10 +282,24 @@ class PipecatService:
                     tool_registrations,
                 ) = ToolWrapperFactory.create_all_tool_functions(tools)
 
-                # Register each tool with LLM
-                for tool_name, tool_func in tool_registrations:
-                    llm.register_function(tool_name, tool_func)
-                    logger.info(f"Registered tool '{tool_name}' with LLM")
+                # Register each tool with LLM. Tools stay synchronous
+                # (cancel_on_interruption=True): an async tool lets the LLM speak
+                # before its result and adds instructions to system_instruction,
+                # which on Gemini replaces the context system prompt.
+                for registration in tool_registrations:
+                    timeout_secs = function_call_timeout_secs(
+                        registration.request_timeout_secs
+                    )
+                    llm.register_function(
+                        registration.name,
+                        registration.handler,
+                        cancel_on_interruption=True,
+                        timeout_secs=timeout_secs,
+                    )
+                    logger.info(
+                        f"Registered tool '{registration.name}' with LLM "
+                        f'(timeout {timeout_secs}s)'
+                    )
 
             except Exception as e:
                 logger.error(
@@ -336,7 +343,6 @@ class PipecatService:
         #     )
         # )
         # llm.register_function('end_conversation', conversation_completion_func)
-        logger.info('Registered conversation completion tool with LLM')
 
         # Create FunctionSchema for conversation completion
         # end_conversation_schema = FunctionSchema(
@@ -406,43 +412,7 @@ class PipecatService:
         if is_multi_language:
             context_container['context'] = context
 
-        context_aggregator = LLMContextAggregatorPair(
-            context,
-            user_params=LLMUserAggregatorParams(
-                user_turn_strategies=UserTurnStrategies(
-                    start=[
-                        VADUserTurnStartStrategy(),
-                        # MinWordsUserTurnStartStrategy(min_words=3),
-                    ],  # List of start strategies
-                    stop=[
-                        TurnAnalyzerUserTurnStopStrategy(
-                            turn_analyzer=LocalSmartTurnAnalyzerV3()
-                        ),
-                        # TranscriptionUserTurnStopStrategy() # Not needed
-                    ],  # List of stop strategies
-                ),
-                user_mute_strategies=[
-                    MuteUntilFirstBotCompleteUserMuteStrategy(),
-                    FunctionCallUserMuteStrategy(),
-                ],
-                # VAD runs here since pipecat 1.0 removed TransportParams.vad_analyzer
-                # (an unknown transport param is silently ignored). The aggregator
-                # broadcasts VAD frames upstream too, so STT still receives them.
-                vad_analyzer=SileroVADAnalyzer(
-                    params=VADParams(
-                        confidence=0.7,
-                        start_secs=0.2,
-                        stop_secs=0.2,  # Short, so smart turn detection decides end of turn
-                        min_volume=0.6,
-                    ),
-                ),
-                # Since 1.x, a user turn with no transcript that interrupted the bot
-                # triggers a "please repeat" inference via a developer-role message.
-                # Keep the 0.0.x behaviour (no answer) until that is verified on
-                # every LLM provider we support.
-                empty_user_turn=None,
-            ),
-        )
+        context_aggregator = create_context_aggregator(context, voice_runtime)
 
         # --- Call evaluation: transcript log and stats ---
         transcript_log: List[Dict[str, Any]] = []
@@ -450,21 +420,37 @@ class PipecatService:
         call_stats: Dict[str, Any] = {
             'user_turns': 0,
             'assistant_turns': 0,
-            'interruption_count': 0,
             'tool_calls_count': 0,
             'language_switch_count': 0,
-            '_bot_speaking': False,
         }
+        # Latency, barge-ins and turn watchdog events, from pipeline observers
+        call_metrics = CallMetricsCollector(
+            tts_provider=tts_config['provider'],
+            stt_provider=stt_config['provider'],
+            llm_provider=llm_config['type'],
+        )
+
+        # Pipecat never attaches its spans to the current OTel context, and they
+        # have ended by the time the pipeline finishes, so keep the latest turn's
+        # span to parent call.evaluation in the call's trace.
+        trace_parent: Dict[str, Any] = {'span_context': None}
+
+        def remember_trace_parent():
+            worker = task_container['task']
+            observer = worker.turn_trace_observer if worker else None
+            span_context = observer.get_current_turn_context() if observer else None
+            if span_context is not None and span_context.is_valid:
+                trace_parent['span_context'] = span_context
 
         @context_aggregator.user().event_handler('on_user_turn_started')
         async def on_user_turn_started(aggregator, strategy):
-            if call_stats['_bot_speaking']:
-                call_stats['interruption_count'] += 1
+            remember_trace_parent()
 
         @context_aggregator.user().event_handler('on_user_turn_stopped')
         async def on_user_turn_stopped(
             aggregator, strategy, message: UserTurnStoppedMessage
         ):
+            remember_trace_parent()
             call_stats['user_turns'] += 1
             transcript_log.append(
                 {
@@ -474,15 +460,18 @@ class PipecatService:
                 }
             )
 
+        @context_aggregator.user().event_handler('on_user_turn_stop_timeout')
+        async def on_user_turn_stop_timeout(aggregator):
+            call_metrics.record_stop_timeout()
+
         @context_aggregator.assistant().event_handler('on_assistant_turn_started')
         async def on_assistant_turn_started(aggregator):
-            call_stats['_bot_speaking'] = True
+            remember_trace_parent()
 
         @context_aggregator.assistant().event_handler('on_assistant_turn_stopped')
         async def on_assistant_turn_stopped(
             aggregator, message: AssistantTurnStoppedMessage
         ):
-            call_stats['_bot_speaking'] = False
             call_stats['assistant_turns'] += 1
             transcript_log.append(
                 {
@@ -520,8 +509,7 @@ class PipecatService:
                 audio_in_sample_rate=8000,  # Twilio uses 8kHz
                 audio_out_sample_rate=8000,
                 enable_metrics=True,
-                # enable_usage_metrics=True,
-                # report_only_initial_ttfb=True
+                enable_usage_metrics=True,
             ),
             idle_timeout_frames=(
                 BotSpeakingFrame,
@@ -530,6 +518,10 @@ class PipecatService:
                 UserStartedSpeakingFrame,
             ),
             idle_timeout_secs=300,
+            observers=call_metrics.observers,
+            # Telephony serializers carry no RTVI messages; don't build its
+            # processor and observer for every call.
+            enable_rtvi=False,
             enable_tracing=pipecat_settings.enable_tracing,
             enable_turn_tracking=pipecat_settings.enable_turn_tracking,
             conversation_id=None,
@@ -550,15 +542,18 @@ class PipecatService:
         # Register event handlers
         @llm.event_handler('on_function_calls_started')
         async def on_function_calls_started(service, function_calls):
+            call_names = [fc.function_name for fc in function_calls]
+            # Count non-language-switch tool invocations (language switches are
+            # counted in language_state)
+            call_stats['tool_calls_count'] += sum(
+                1 for name in call_names if name != 'detect_and_switch_language'
+            )
             if not pipecat_settings.enable_filler_phrases_before_tool_call:
                 return
             # Skip filler phrase when language is switching — the TTS service's language
             # may change before the queued frame is processed, causing a language mismatch error.
-            call_names = [fc.function_name for fc in function_calls]
             if 'detect_and_switch_language' in call_names:
                 return
-            # Count non-language-switch tool invocations
-            call_stats['tool_calls_count'] += len(function_calls)
             current_lang = language_state.get('current_language', 'en')
             phrases = FILLER_PHRASES.get(current_lang)
             if not phrases:
@@ -582,17 +577,21 @@ class PipecatService:
             # Pull language switch count from language_state (already tracked there)
             call_stats['language_switch_count'] = language_state.get('switch_count', 0)
             if pipecat_settings.enable_tracing and pipecat_settings.otlp_endpoint:
-                # Capture the current OTel context now, while the pipecat span is still
-                # active. The background task will use this as the parent so call.evaluation
-                # appears under the same trace rather than as a new root trace.
-                parent_ctx = otel_context.get_current()
+                # Parent call.evaluation on the last turn span seen, so it lands in
+                # the call's trace rather than as a new root trace.
+                span_context = trace_parent['span_context']
+                parent_ctx = (
+                    trace.set_span_in_context(NonRecordingSpan(span_context))
+                    if span_context is not None
+                    else None
+                )
                 t = asyncio.create_task(
                     CallEvaluationService.record_call_metrics(
                         call_id=call_id,
                         agent_config=agent_config,
                         call_outcome=outcome,
                         transcript_log=transcript_log,
-                        stats=call_stats,
+                        stats={**call_stats, **call_metrics.summary()},
                         parent_context=parent_ctx,
                         settings=self.settings,
                     )

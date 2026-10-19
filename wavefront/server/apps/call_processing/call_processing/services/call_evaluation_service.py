@@ -41,6 +41,21 @@ _EVAL_DIMENSIONS = [
     'compliance_safety',
 ]
 
+# stats key -> span attribute, for stats a call may not have (CallMetricsCollector)
+_OPTIONAL_STAT_ATTRIBUTES = {
+    'v2v_p50_secs': 'call.v2v_p50_secs',
+    'v2v_p95_secs': 'call.v2v_p95_secs',
+    'v2v_samples': 'call.v2v_samples',
+    'first_bot_speech_secs': 'call.first_bot_speech_secs',
+    'user_turn_p95_secs': 'call.user_turn_p95_secs',
+    'stop_timeout_count': 'call.stop_timeout_count',
+    'desync_risk_interruptions': 'call.desync_risk_interruptions',
+    'tts_provider': 'tts.provider',
+    'tts_word_timestamps': 'tts.word_timestamps',
+    'stt_provider': 'stt.provider',
+    'llm_provider': 'llm.provider',
+}
+
 
 class CallEvaluationService:
     """Emits a post-call OTel span with quantitative metrics and optional LLM analysis."""
@@ -68,7 +83,8 @@ class CallEvaluationService:
             call_outcome: "completed" | "cancelled" | "error" | "stopped"
             transcript_log: List of {"role", "content", "timestamp"} dicts
             stats: Dict with keys: user_turns, assistant_turns, interruption_count,
-                   tool_calls_count, language_switch_count
+                   tool_calls_count, language_switch_count, plus the optional
+                   latency/provider keys in _OPTIONAL_STAT_ATTRIBUTES
         """
         try:
             agent_id = str(agent_config.get('id', ''))
@@ -95,28 +111,35 @@ class CallEvaluationService:
                 f'assistant_words={total_words_assistant}'
             )
 
+            attributes = {
+                'call.id': call_id,
+                'voice_agent.id': agent_id,
+                'voice_agent.name': agent_name,
+                # --- Call outcome ---
+                'call.outcome': call_outcome,
+                # --- Turn counts ---
+                'call.total_turns': total_turns,
+                'call.user_turns': user_turns,
+                'call.assistant_turns': assistant_turns,
+                # --- Engagement metrics ---
+                'call.interruption_count': stats.get('interruption_count', 0),
+                'call.tool_calls_count': stats.get('tool_calls_count', 0),
+                'call.language_switch_count': stats.get('language_switch_count', 0),
+                # --- Transcript volume ---
+                'call.transcript_turns': len(transcript_log),
+                'call.total_words_user': total_words_user,
+                'call.total_words_assistant': total_words_assistant,
+            }
+            # --- Latency, turn-taking and providers (only when collected) ---
+            for stat_key, attribute in _OPTIONAL_STAT_ATTRIBUTES.items():
+                value = stats.get(stat_key)
+                if value is not None:
+                    attributes[attribute] = value
+
             with tracer.start_as_current_span(
                 'call.evaluation',
                 context=parent_context,
-                attributes={
-                    'call.id': call_id,
-                    'voice_agent.id': agent_id,
-                    'voice_agent.name': agent_name,
-                    # --- Call outcome ---
-                    'call.outcome': call_outcome,
-                    # --- Turn counts ---
-                    'call.total_turns': total_turns,
-                    'call.user_turns': user_turns,
-                    'call.assistant_turns': assistant_turns,
-                    # --- Engagement metrics ---
-                    'call.interruption_count': stats.get('interruption_count', 0),
-                    'call.tool_calls_count': stats.get('tool_calls_count', 0),
-                    'call.language_switch_count': stats.get('language_switch_count', 0),
-                    # --- Transcript volume ---
-                    'call.transcript_turns': len(transcript_log),
-                    'call.total_words_user': total_words_user,
-                    'call.total_words_assistant': total_words_assistant,
-                },
+                attributes=attributes,
             ) as span:
                 # Add one span event per turn — no raw content to avoid PII in OTel
                 for entry in transcript_log:

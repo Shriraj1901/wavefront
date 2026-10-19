@@ -454,8 +454,9 @@ const CreateVoiceAgentDialog: React.FC<CreateVoiceAgentDialogProps> = ({ isOpen,
             <Label>{paramConfig.description || key}</Label>
             <Input
               type="number"
+              step="any"
               value={getNumberOrStringParameter(sttParameters, key)}
-              onChange={(e) => setSttParameter(key, e.target.value ? parseInt(e.target.value) : undefined)}
+              onChange={(e) => setSttParameter(key, e.target.value ? parseFloat(e.target.value) : undefined)}
               placeholder={paramConfig.placeholder}
             />
             {paramConfig.placeholder && (

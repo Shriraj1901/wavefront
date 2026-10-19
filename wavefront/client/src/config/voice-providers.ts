@@ -341,7 +341,13 @@ export const VOICE_PROVIDERS_CONFIG: VoiceProvidersConfig = {
           vad_events: {
             type: 'boolean',
             default: false,
-            description: 'Enable voice activity detection events',
+            description: 'No effect: turn-taking uses its own voice activity detection',
+          },
+          ttfs_p99_latency: {
+            type: 'number',
+            default: undefined,
+            description: 'Max seconds a turn waits for the final transcript (empty = provider default)',
+            placeholder: '0.35',
           },
         },
       },
@@ -374,6 +380,12 @@ export const VOICE_PROVIDERS_CONFIG: VoiceProvidersConfig = {
             default: false,
             description: 'High VAD sensitivity',
           },
+          ttfs_p99_latency: {
+            type: 'number',
+            default: undefined,
+            description: 'Max seconds a turn waits for the final transcript (empty = provider default)',
+            placeholder: '1.17',
+          },
         },
       },
       elevenlabs: {
@@ -401,6 +413,12 @@ export const VOICE_PROVIDERS_CONFIG: VoiceProvidersConfig = {
             description: 'Audio sample rate in Hz',
             placeholder: '8000',
           },
+          ttfs_p99_latency: {
+            type: 'number',
+            default: undefined,
+            description: 'Max seconds a turn waits for the final transcript (empty = provider default)',
+            placeholder: '0.41',
+          },
         },
       },
       azure: {
@@ -425,8 +443,8 @@ export const VOICE_PROVIDERS_CONFIG: VoiceProvidersConfig = {
           ttfs_p99_latency: {
             type: 'number' as const,
             default: undefined,
-            description: 'P99 latency threshold in seconds for first speech detection',
-            placeholder: '1.5',
+            description: 'Max seconds a turn waits for the final transcript (empty = provider default)',
+            placeholder: '1.8',
             step: 0.1,
           },
         },

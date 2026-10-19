@@ -507,8 +507,12 @@ const EditVoiceAgentDialog: React.FC<EditVoiceAgentDialogProps> = ({
             <Input
               id={`stt-${key}`}
               type="number"
-              value={(sttParameters[key] ?? paramConfig.default ?? 0) as number}
-              onChange={(e) => setSttParameter(key, parseFloat(e.target.value) || 0)}
+              step="any"
+              value={(sttParameters[key] ?? paramConfig.default ?? '') as number | string}
+              // '' (not undefined) keeps a cleared field empty instead of falling
+              // back to the default; empty values are dropped on submit.
+              onChange={(e) => setSttParameter(key, e.target.value ? parseFloat(e.target.value) : '')}
+              placeholder={paramConfig.placeholder}
             />
           </div>
         );

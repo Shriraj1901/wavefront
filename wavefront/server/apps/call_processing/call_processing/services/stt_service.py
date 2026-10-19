@@ -4,6 +4,7 @@ STT (Speech-to-Text) service factory
 Supports multiple providers: Deepgram, Sarvam, ElevenLabs
 """
 
+import math
 from typing import Dict, Any
 from call_processing.log.logger import logger
 
@@ -21,6 +22,29 @@ from pipecat.transcriptions.language import Language
 
 # Frames
 from pipecat.frames.frames import STTUpdateSettingsFrame
+
+
+def _add_ttfs_p99_latency(kwargs: Dict[str, Any], parameters: Dict[str, Any]) -> None:
+    """Pass a stored ttfs_p99_latency to the STT service's constructor.
+
+    It caps how long a turn waits for a final transcript after the user stops
+    speaking; only a stalled transcript ever waits that long. Left out, each
+    pipecat service uses its provider's measured default. A value of zero or
+    less would end turns before their transcript lands, so it is ignored.
+    """
+    value = parameters.get('ttfs_p99_latency')
+    if value is None:
+        return
+    try:
+        latency = float(value)
+    except (TypeError, ValueError):
+        latency = math.nan
+    if not math.isfinite(latency) or latency <= 0:
+        logger.warning(
+            f'Ignoring invalid STT ttfs_p99_latency {value!r}; using the provider default'
+        )
+        return
+    kwargs['ttfs_p99_latency'] = latency
 
 
 class STTServiceFactory:
@@ -87,12 +111,18 @@ class STTServiceFactory:
             settings_kwargs['punctuate'] = parameters['punctuate']
         if 'profanity_filter' in parameters:
             settings_kwargs['profanity_filter'] = parameters['profanity_filter']
+        # Server-side segmentation. Pipecat still sends Finalize when VAD stops,
+        # so the final transcript of a turn doesn't wait on these.
+        for key in ('endpointing', 'utterance_end_ms'):
+            if parameters.get(key) is not None:
+                settings_kwargs[key] = parameters[key]
 
         # Init-level params (not runtime-updatable)
         kwargs: Dict[str, Any] = {
             'api_key': api_key,
             'encoding': parameters.get('encoding', 'linear16'),
         }
+        _add_ttfs_p99_latency(kwargs, parameters)
         if parameters.get('base_url'):
             # e.g. 'api.eu.deepgram.com' for EU-region projects; scheme optional
             kwargs['base_url'] = parameters['base_url']
@@ -165,6 +195,8 @@ class STTServiceFactory:
             settings_kwargs['high_vad_sensitivity'] = parameters['high_vad_sensitivity']
 
         sample_rate = parameters.get('sample_rate', 8000)
+        kwargs: Dict[str, Any] = {}
+        _add_ttfs_p99_latency(kwargs, parameters)
 
         logger.info(f'Sarvam STT config: model={model}, sample_rate={sample_rate}')
 
@@ -172,6 +204,7 @@ class STTServiceFactory:
             api_key=api_key,
             mode=mode,
             sample_rate=sample_rate,
+            **kwargs,
             settings=SarvamSTTSettings(**settings_kwargs),
         )
 
@@ -221,12 +254,15 @@ class STTServiceFactory:
                 )
 
         sample_rate = parameters.get('sample_rate', 8000)
+        kwargs: Dict[str, Any] = {}
+        _add_ttfs_p99_latency(kwargs, parameters)
 
         logger.info(f'ElevenLabs STT config: model={model}, sample_rate={sample_rate}')
 
         return ElevenLabsRealtimeSTTService(
             api_key=api_key,
             sample_rate=sample_rate,
+            **kwargs,
             settings=ElevenLabsRealtimeSTTSettings(**settings_kwargs),
         )
 
@@ -245,11 +281,7 @@ class STTServiceFactory:
             kwargs['sample_rate'] = parameters['sample_rate']
         if 'endpoint_id' in parameters and parameters['endpoint_id']:
             kwargs['endpoint_id'] = parameters['endpoint_id']
-        if (
-            'ttfs_p99_latency' in parameters
-            and parameters['ttfs_p99_latency'] is not None
-        ):
-            kwargs['ttfs_p99_latency'] = parameters['ttfs_p99_latency']
+        _add_ttfs_p99_latency(kwargs, parameters)
 
         settings_kwargs: Dict[str, Any] = {}
         if 'language' in parameters and parameters['language']:
