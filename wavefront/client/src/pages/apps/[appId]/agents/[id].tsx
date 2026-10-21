@@ -28,11 +28,10 @@ import { AgentStreamEvent } from '@app/types/agent';
 import { ChatMessage, ChatMessageContent } from '@app/types/chat-message';
 import { scrollToBottom } from '@app/utils/scroll';
 import { useQueryClient } from '@tanstack/react-query';
-import yaml from 'js-yaml';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import EditAgentDialog from './EditAgentDialog';
-import { buildYamlToolsFromSelection, selectedToolsEqual, selectedToolsFromYaml } from './agent-tools';
+import { selectedToolsEqual, selectedToolsFromYaml } from './agent-tools';
 import { formatAppName } from '@app/lib/utils';
 
 const AgentDetail: React.FC = () => {
@@ -95,11 +94,8 @@ const AgentDetail: React.FC = () => {
 
   // Datasource and tool selection state
   const [selectedTools, setSelectedTools] = useState<{ id: string; value: string }[]>([]);
-  const isUpdatingYamlRef = useRef(false);
   // True until selectedTools has been rebuilt from the loaded agent YAML.
-  // Without this, the YAML←selection sync runs with [] and wipes agent.tools.
   const pendingToolsHydrationRef = useRef(true);
-  const skipNextToolsYamlSyncRef = useRef(false);
 
   // Fetch data using hooks
   const { data: agent, isLoading: agentLoading } = useGetAgent(appId, id, selectedVersion);
@@ -141,23 +137,18 @@ const AgentDetail: React.FC = () => {
   useEffect(() => {
     if (!agent?.yaml_content) return;
 
-    isUpdatingYamlRef.current = true;
     pendingToolsHydrationRef.current = true;
     setYamlContent(agent.yaml_content);
-    setTimeout(() => {
-      isUpdatingYamlRef.current = false;
-    }, 0);
   }, [agent]);
 
   // Restore combobox selection from agent.tools. toolsDetails often arrives
-  // after the agent payload; until then the YAML←selection sync must not run.
+  // after the agent payload; selection is hydrated once both are available.
   useEffect(() => {
     if (!pendingToolsHydrationRef.current || !yamlContent || toolsDetails.length === 0) {
       return;
     }
 
     const hydrated = selectedToolsFromYaml(yamlContent, toolsDetails);
-    skipNextToolsYamlSyncRef.current = true;
     pendingToolsHydrationRef.current = false;
     setSelectedTools((prev) => (selectedToolsEqual(prev, hydrated) ? prev : hydrated));
   }, [yamlContent, toolsDetails]);
@@ -171,49 +162,6 @@ const AgentDetail: React.FC = () => {
       });
     }
   };
-
-  // Push combobox selection into YAML (user edits only — not hydration).
-  useEffect(() => {
-    if (pendingToolsHydrationRef.current) return;
-    if (skipNextToolsYamlSyncRef.current) {
-      skipNextToolsYamlSyncRef.current = false;
-      return;
-    }
-    if (isUpdatingYamlRef.current || !yamlContent || toolsDetails.length === 0) return;
-
-    const parsedYaml = yaml.load(yamlContent) as { agent?: { tools?: unknown[] } } | null;
-    if (!parsedYaml?.agent) return;
-
-    const existingTools = parsedYaml.agent.tools || [];
-    const newTools = buildYamlToolsFromSelection(selectedTools, toolsDetails);
-    const toolsChanged =
-      existingTools.length !== newTools.length ||
-      existingTools.some((existingTool: unknown, index: number) => {
-        const newTool = newTools[index];
-        if (!newTool) return true;
-        const existing = existingTool as {
-          name?: string;
-          prefilled_params?: Record<string, string>;
-        };
-        return (
-          existing.name !== newTool.name ||
-          JSON.stringify(existing.prefilled_params || {}) !== JSON.stringify(newTool.prefilled_params || {})
-        );
-      });
-
-    if (!toolsChanged) return;
-
-    parsedYaml.agent.tools = newTools;
-    const newYamlContent = yaml.dump(parsedYaml);
-    if (newYamlContent === yamlContent) return;
-
-    isUpdatingYamlRef.current = true;
-    setYamlContent(newYamlContent);
-    setTimeout(() => {
-      isUpdatingYamlRef.current = false;
-    }, 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTools, toolsDetails]);
 
   const handleImageUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -362,6 +310,7 @@ const AgentDetail: React.FC = () => {
       );
     } catch (error) {
       console.error('Error updating agent:', error);
+      throw error;
     } finally {
       setSaving(false);
     }
@@ -751,14 +700,16 @@ const AgentDetail: React.FC = () => {
           <EditAgentDialog
             isOpen={editDialogOpen}
             onOpenChange={setEditDialogOpen}
+            appId={appId!}
             yamlContent={yamlContent}
             selectedTools={selectedTools}
             toolsDetails={toolsDetails}
             editingVersion={displayVersion}
             onSave={async (updatedYamlContent, updatedSelectedTools, options) => {
+              // Only adopt the new content once the server accepted it; a rejection keeps the dialog open.
+              await handleSave(updatedYamlContent, options);
               setYamlContent(updatedYamlContent);
               setSelectedTools(updatedSelectedTools);
-              handleSave(updatedYamlContent, options);
             }}
             saving={saving}
           />

@@ -7,7 +7,6 @@ import { Button } from '@app/components/ui/button';
 import { Label } from '@app/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@app/components/ui/select';
 import { Switch } from '@app/components/ui/switch';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@app/components/ui/dialog';
 import { appEnv } from '@app/config/env';
 import {
   documentMimeTypeFor,
@@ -16,31 +15,26 @@ import {
   validateImageUpload,
 } from '@app/constants/upload';
 import { useGetWorkflowVersions, usePromoteWorkflowVersion, useDeleteWorkflowVersion } from '@app/hooks';
-import { getWorkflowVersionsKey } from '@app/hooks/data/query-keys';
 import { useNotifyStore } from '@app/store';
 import { ChatMessage, ChatMessageContent } from '@app/types/chat-message';
 import { Workflow, WorkflowEvent } from '@app/types/workflow';
 import { scrollToBottom } from '@app/utils/scroll';
-import { useQueryClient } from '@tanstack/react-query';
-import { popupCodeMirrorExtensions } from '@app/lib/code-mirror';
 import { langs } from '@uiw/codemirror-extensions-langs';
 import CodeMirror from '@uiw/react-codemirror';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { useParams } from 'react-router';
 import { formatAppName } from '@app/lib/utils';
+import { useWorkflowUpdatedListener } from './useWorkflowDraftSave';
 
 type MessageInput = { role: 'user' | 'assistant'; content: ChatMessageContent };
 
 const WorkflowDetail: React.FC = () => {
   const { app: appId, id } = useParams<{ app: string; id: string }>();
   const { notifySuccess, notifyError } = useNotifyStore();
-  const queryClient = useQueryClient();
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
+  // Saved YAML shown on the page; editing happens in the standalone editor tab
   const [yamlContent, setYamlContent] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [editDialogOpen, setEditDialogOpen] = useState(false);
-  const [editSubmitAction, setEditSubmitAction] = useState<'save' | 'new' | null>(null);
   const [versionsDialogOpen, setVersionsDialogOpen] = useState(false);
   // undefined = current_version
   const [selectedVersion, setSelectedVersion] = useState<number | undefined>(undefined);
@@ -290,29 +284,19 @@ const WorkflowDetail: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, selectedVersion]);
 
-  const handleSave = async (createNewVersion: boolean = false) => {
-    if (!id || !workflow) return;
+  // Reload when this workflow is created or saved from an editor tab
+  useWorkflowUpdatedListener(
+    useCallback(
+      (updatedId: string) => {
+        if (updatedId === id) loadWorkflow(selectedVersion);
+      },
+      [id, loadWorkflow, selectedVersion]
+    )
+  );
 
-    setSaving(true);
-    try {
-      await floConsoleService.workflowService.updateWorkflow(id, yamlContent, displayVersion, createNewVersion);
-      setEditDialogOpen(false);
-      // Refetch versions and reload the workflow so version metadata stays in sync.
-      queryClient.invalidateQueries({
-        queryKey: getWorkflowVersionsKey(appId || '', id || ''),
-      });
-      await loadWorkflow(selectedVersion);
-      notifySuccess(
-        createNewVersion
-          ? 'New version created (not promoted — promote it from Versions to make it live)'
-          : 'Workflow updated successfully'
-      );
-    } catch (error) {
-      console.error('Error updating workflow:', error);
-    } finally {
-      setSaving(false);
-      setEditSubmitAction(null);
-    }
+  const handleOpenEditor = () => {
+    const versionQuery = selectedVersion !== undefined ? `?version=${selectedVersion}` : '';
+    window.open(`/apps/${appId}/workflows/${id}/editor${versionQuery}`, '_blank', 'noopener');
   };
 
   const handlePromoteVersion = (version: number) => {
@@ -342,18 +326,6 @@ const WorkflowDetail: React.FC = () => {
   const handleViewVersion = (version: number) => {
     setSelectedVersion(version);
     setVersionsDialogOpen(false);
-  };
-
-  const handleEditDialogOpen = () => {
-    setEditDialogOpen(true);
-  };
-
-  const handleEditDialogClose = () => {
-    setEditDialogOpen(false);
-    // Reset yamlContent to original workflow content when canceling
-    if (workflow) {
-      setYamlContent(workflow.yaml_content || '');
-    }
   };
 
   const handleQuertionEntered = () => {
@@ -719,9 +691,9 @@ const WorkflowDetail: React.FC = () => {
   return (
     <div className="h-full bg-transparent py-5">
       <div className="flex h-full w-full flex-col gap-10">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <p className="frost-text text-2xl leading-normal font-semibold">{formatAppName(workflow?.name)}</p>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-end gap-4">
             <StreamToggle
               enabled={listenEventsEnabled}
               onChange={setListenEventsEnabled}
@@ -754,7 +726,7 @@ const WorkflowDetail: React.FC = () => {
             <Button variant="outline" onClick={() => setVersionsDialogOpen(true)}>
               Versions
             </Button>
-            <Button variant="outline" onClick={handleEditDialogOpen}>
+            <Button variant="outline" onClick={handleOpenEditor} title="Opens the editor in a new tab">
               Edit
             </Button>
           </div>
@@ -767,7 +739,6 @@ const WorkflowDetail: React.FC = () => {
               <CodeMirror
                 value={yamlContent}
                 editable={false}
-                onChange={(value: string) => setYamlContent(value)}
                 theme="dark"
                 className="h-full max-h-[600px] w-full max-w-[800px]"
                 height="100%"
@@ -815,56 +786,6 @@ const WorkflowDetail: React.FC = () => {
           </div>
         </div>
       </div>
-
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="max-h-[90vh] min-w-0 overflow-y-auto lg:max-w-4xl">
-          <DialogHeader>
-            <DialogTitle>Edit Workflow Configuration</DialogTitle>
-          </DialogHeader>
-          <div className="flex min-w-0 flex-col gap-3 overflow-y-auto py-4">
-            <CodeMirror
-              value={yamlContent}
-              editable={true}
-              onChange={(value: string) => setYamlContent(value)}
-              theme="dark"
-              height="500px"
-              width="100%"
-              maxWidth="100%"
-              className="w-full min-w-0"
-              extensions={[langs.yaml(), ...popupCodeMirrorExtensions]}
-            />
-            <p className="text-sm leading-normal font-normal text-[#878787]">
-              Define your workflow configuration in YAML format.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={handleEditDialogClose} disabled={saving}>
-              Cancel
-            </Button>
-            <Button
-              variant="outline"
-              disabled={saving}
-              loading={saving && editSubmitAction === 'save'}
-              onClick={() => {
-                setEditSubmitAction('save');
-                handleSave(false);
-              }}
-            >
-              Save
-            </Button>
-            <Button
-              disabled={saving}
-              loading={saving && editSubmitAction === 'new'}
-              onClick={() => {
-                setEditSubmitAction('new');
-                handleSave(true);
-              }}
-            >
-              Save as new version
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <VersionsDialog
         isOpen={versionsDialogOpen}
