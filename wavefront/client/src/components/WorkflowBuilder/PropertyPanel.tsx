@@ -36,6 +36,8 @@ interface PropertyPanelProps {
   startNodeId?: string;
   onSetStartAgent?: (agentId: string) => void;
   onDeleteNode?: (nodeId: string) => void;
+  // Shows the node's values without allowing edits (a previewed assistant proposal): every control is disabled
+  readOnly?: boolean;
 }
 
 export const PropertyPanel = ({
@@ -47,6 +49,7 @@ export const PropertyPanel = ({
   startNodeId,
   onSetStartAgent,
   onDeleteNode,
+  readOnly = false,
 }: PropertyPanelProps) => {
   const { app: appId } = useParams<{ app: string }>();
   const { data: rootfloConfigs = [] } = useGetLLMConfigs(appId || '');
@@ -66,13 +69,18 @@ export const PropertyPanel = ({
 
   if (!selectedNode) return null;
 
-  const handleChange = (key: string, value: unknown) => onUpdateNode(selectedNode.id, { [key]: value });
+  const handleChange = (key: string, value: unknown) => {
+    if (!readOnly) onUpdateNode(selectedNode.id, { [key]: value });
+  };
 
-  const handleChanges = (patch: Record<string, unknown>) => onUpdateNode(selectedNode.id, patch);
+  const handleChanges = (patch: Record<string, unknown>) => {
+    if (!readOnly) onUpdateNode(selectedNode.id, patch);
+  };
 
   // Renames are committed on blur / Enter only, so references are never re-keyed to half-typed names.
   // Returns whether the input now matches the node name.
   const commitName = (): boolean => {
+    if (readOnly) return true;
     const sanitized = sanitizeNodeName(nameInput);
     if (sanitized === selectedNode.id) {
       setNameInput(selectedNode.id);
@@ -122,7 +130,17 @@ export const PropertyPanel = ({
         </button>
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+      {readOnly && (
+        <p
+          role="status"
+          className="border-border shrink-0 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-[11px] leading-snug text-amber-900 dark:text-amber-200"
+        >
+          Previewing proposed values. Nothing is saved until you press Apply.
+        </p>
+      )}
+
+      {/* A disabled fieldset disables every native control inside it, so nothing can be edited during a preview */}
+      <fieldset disabled={readOnly} className="m-0 min-w-0 flex-1 space-y-4 overflow-y-auto border-0 p-4">
         {/* ENTRY STEP STATUS / BUTTON FOR EXECUTABLE STEPS */}
         {isExecutableNode(selectedNode) && (
           <EntryAgentStatus
@@ -222,7 +240,7 @@ export const PropertyPanel = ({
             <Trash2 size={13} /> Delete this {selectedNode.type?.replace('Node', '') || 'Step'}
           </Button>
         </div>
-      </div>
+      </fieldset>
     </aside>
   );
 };

@@ -281,6 +281,10 @@ class AgentInferenceService:
         """
         return await load_api_service_tool(tool_name, self.api_services_manager)
 
+    def build_llm(self, config: LlmInferenceConfig):
+        """Public entry to the shared LLM builder (used by the workflow assistant)."""
+        return self._create_llm_instance(config)
+
     def _create_llm_instance(self, config: LlmInferenceConfig):
         """
         Create LLM instance based on configuration

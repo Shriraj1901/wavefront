@@ -68,3 +68,11 @@ def get_workflows_list_cache_key(namespace: Optional[str] = None) -> str:
     if namespace:
         return f'workflows_list:namespace:{namespace}'
     return 'workflows_list:all'
+
+
+def get_assistant_api_tools_cache_key() -> str:
+    """Get cache key for the workflow assistant's API-service tool listing.
+
+    Meant to be cached with a short TTL - it only feeds the assistant's prompt.
+    """
+    return 'workflow_assistant:api_service_tools'

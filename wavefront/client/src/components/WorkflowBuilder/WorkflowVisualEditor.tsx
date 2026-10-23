@@ -63,6 +63,17 @@ import { CanvasLegend } from './canvas/CanvasLegend';
 import { EmptyCanvasWelcome } from './canvas/EmptyCanvasWelcome';
 import { AddNodeMenu, AddNodeMenuState } from './canvas/AddNodeMenu';
 import { IntentPromptModal, IntentPromptState } from './canvas/IntentPromptModal';
+import { useRegisterEditorBridge, type ApplyYamlResult, type EditorBridge } from './assistant/editorBridge';
+import { blockedByPreview } from './assistant/previewLock';
+import { useNotifyStore } from '@app/store';
+import {
+  buildDisplayNodes,
+  ghostNodeIds,
+  positionProposedGraph,
+  previewFocusNodeIds,
+  type MeasuredSizes,
+  type PreviewOverlay,
+} from './assistant/proposalGraph';
 
 // Setup custom nodes mapping
 const nodeTypes = {
@@ -86,6 +97,9 @@ const DROPPABLE_NODE_TYPES: string[] = [
 ];
 
 const FILTER_FOCUS_COLOR = '#3b82f6';
+// Previewed assistant proposal: new edges green, edges it would remove red
+const PREVIEW_ADDED_COLOR = '#16a34a';
+const PREVIEW_REMOVED_COLOR = '#dc2626';
 const FIT_VIEW_OPTIONS = { padding: 0.2, duration: 400 };
 
 // Runs the layout again once every card has been rendered and measured, so no block is placed from a guessed height
@@ -121,6 +135,13 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
   // Only the id is stored: the selected node is always read from the current nodes
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [showDataWires, setShowDataWires] = useState<boolean>(false);
+  // Assistant proposal shown over the canvas. Kept apart from nodes/edges, so none of it can reach the serialized YAML.
+  const [preview, setPreview] = useState<PreviewOverlay | null>(null);
+  // While previewing, every edit to the live graph is dropped (see guardEdit)
+  const previewActiveRef = useRef(false);
+  previewActiveRef.current = !!preview;
+  const notifyWarning = useNotifyStore((state) => state.notifyWarning);
+  const guardEdit = useCallback(() => blockedByPreview(previewActiveRef.current, notifyWarning), [notifyWarning]);
 
   const [addNodeMenu, setAddNodeMenu] = useState<AddNodeMenuState | null>(null);
   const [intentPrompt, setIntentPrompt] = useState<IntentPromptState | null>(null);
@@ -153,18 +174,39 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
-  const selectedNode = useMemo(() => nodes.find((n) => n.id === selectedNodeId) ?? null, [nodes, selectedNodeId]);
+  const yamlContentRef = useRef(yamlContent);
+  yamlContentRef.current = yamlContent;
+  const issuesRef = useRef(issues);
+  issuesRef.current = issues;
+
+  // One-level undo of the last assistant apply: the graph and YAML from before it, and the YAML it produced.
+  // Valid only while the editor still holds that produced YAML.
+  const undoRef = useRef<{ yaml: string; graph: Graph; issues: GraphIssue[]; applied: string } | null>(null);
+  const [canUndo, setCanUndo] = useState(false);
 
   const startNodeId = useMemo(() => getStartNodeId({ nodes, edges }), [nodes, edges]);
+
+  // Where the previewed proposal's steps sit. Computed when the preview changes, not on every node drag.
+  const previewGraph = useMemo(
+    () => (preview ? positionProposedGraph(graphRef.current, preview.proposed, layoutDirection) : null),
+    [preview, layoutDirection]
+  );
 
   // Filter edges for clean, prettified pipeline visualization
   // Non-execution memory filter edges are hidden by default unless toggled on or when a node is actively selected
   const visibleEdges = useMemo(() => {
     const touchesSelection = (e: Edge) =>
       !!selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId);
-    return edges
+    const ghostEdges = previewGraph ? previewGraph.edges.filter((e) => preview?.diff.edgesAdded.has(e.id)) : [];
+    return (ghostEdges.length ? [...edges, ...ghostEdges] : edges)
       .filter((e) => getEdgeKind(e) !== EDGE_KINDS.FILTER || showDataWires || touchesSelection(e))
       .map((e) => {
+        if (preview?.diff.edgesAdded.has(e.id)) {
+          return { ...e, animated: false, style: { ...e.style, stroke: PREVIEW_ADDED_COLOR, strokeDasharray: '6 4' } };
+        }
+        if (preview?.diff.edgesRemoved.has(e.id)) {
+          return { ...e, animated: false, style: { ...e.style, stroke: PREVIEW_REMOVED_COLOR, opacity: 0.5 } };
+        }
         if (getEdgeKind(e) === EDGE_KINDS.FILTER && touchesSelection(e)) {
           return {
             ...e,
@@ -174,7 +216,46 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
         }
         return e;
       });
-  }, [edges, showDataWires, selectedNodeId]);
+  }, [edges, showDataWires, selectedNodeId, preview, previewGraph]);
+
+  // Sizes React Flow measured for the ghosts. The ghosts are not in `nodes`, so the dimension changes React Flow
+  // reports for them are kept here and handed back on the ghost nodes: without it a ghost loses its size on every
+  // render, stays hidden, and the edges to it (which need the measured handles) are never drawn.
+  const [ghostSizes, setGhostSizes] = useState<MeasuredSizes>({});
+  const ghostIdsRef = useRef<Set<string>>(new Set());
+  ghostIdsRef.current = useMemo(() => (preview ? new Set(ghostNodeIds(preview.diff)) : new Set<string>()), [preview]);
+  useEffect(() => {
+    if (!preview) setGhostSizes((prev) => (Object.keys(prev).length > 0 ? {} : prev));
+  }, [preview]);
+
+  // The live nodes (modified ones showing their proposed data) plus ghosts for the steps a previewed proposal would
+  // add. Display only: the live nodes and the YAML are never touched. Statuses reach the cards by context.
+  const displayNodes = useMemo(
+    () => buildDisplayNodes(nodes, preview, previewGraph, ghostSizes, selectedNodeId),
+    [nodes, preview, previewGraph, ghostSizes, selectedNodeId]
+  );
+
+  // What the property panel shows: during a preview the proposed values (read-only), otherwise the live node
+  const selectedNode = useMemo(
+    () => displayNodes.find((n) => n.id === selectedNodeId) ?? null,
+    [displayNodes, selectedNodeId]
+  );
+
+  // When a preview starts, bring the ghost steps and the nodes they connect to into view. Waits until the ghosts are
+  // measured (fitView skips unmeasured nodes), with a fallback so a preview never waits forever.
+  const fittedPreviewRef = useRef<PreviewOverlay | null>(null);
+  const ghostsMeasured = !!preview && ghostNodeIds(preview.diff).every((id) => (ghostSizes[id]?.width ?? 0) > 0);
+  useEffect(() => {
+    if (!preview || !previewGraph || !reactFlowInstance || fittedPreviewRef.current === preview) return;
+    const focusIds = previewFocusNodeIds(preview.diff, previewGraph.edges).map((id) => ({ id }));
+    if (focusIds.length === 0) return;
+    const fit = () => {
+      fittedPreviewRef.current = preview;
+      reactFlowInstance.fitView({ nodes: focusIds, padding: 0.3, maxZoom: 1, duration: 400 });
+    };
+    const timer = setTimeout(fit, ghostsMeasured ? 60 : 1000);
+    return () => clearTimeout(timer);
+  }, [preview, previewGraph, reactFlowInstance, ghostsMeasured]);
 
   // Sync YAML -> Graph, only for YAML that did not come from this editor
   useEffect(() => {
@@ -225,16 +306,18 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
     [setNodes, setEdges, reportYamlError]
   );
 
-  // Apply one editor action to the latest graph. Returns whether anything changed.
+  // Apply one editor action to the latest graph. Returns whether anything changed. The choke point for user edits:
+  // connect, add, delete, rename, route conditions and start-step changes all land here, and none run during a preview.
   const dispatch = useCallback(
     (action: GraphAction): boolean => {
+      if (guardEdit()) return false;
       if (yamlErrorRef.current) return false;
       const prev = graphRef.current;
       const next = applyGraphAction(prev, action);
       if (next === prev) return false;
       return commitGraph(next);
     },
-    [commitGraph]
+    [commitGraph, guardEdit]
   );
 
   const fitViewSoon = useCallback(() => {
@@ -315,16 +398,22 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
     fitViewSoon();
   }, [setNodes, setEdges, fitViewSoon]);
 
+  // The toolbar's Auto-Layout button. The automatic re-layout after measuring (RelayoutOnMeasure) is not a user edit.
+  const handleUserAutoLayout = useCallback(() => {
+    if (guardEdit()) return;
+    handleAutoLayout();
+  }, [guardEdit, handleAutoLayout]);
+
   // Switching direction moves every node's handles, so re-run the layout in the new direction
   const handleLayoutDirectionChange = useCallback(
     (direction: LayoutDirection) => {
-      if (direction === layoutDirectionRef.current) return;
+      if (direction === layoutDirectionRef.current || guardEdit()) return;
       layoutDirectionRef.current = direction;
       setLayoutDirection(direction);
       saveLayoutDirection(direction);
       handleAutoLayout();
     },
-    [handleAutoLayout]
+    [handleAutoLayout, guardEdit]
   );
 
   // Node components read delete and start state from context, so node data stays free of callbacks
@@ -335,7 +424,28 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
 
   // Deletions are applied by the graph reducer (reference cleanup + YAML), never by React Flow's own remove changes
   const handleNodesChange = useCallback(
-    (changes: NodeChange[]) => onNodesChange(changes.filter((c) => c.type !== 'remove')),
+    (changes: NodeChange[]) => {
+      const ghostIds = ghostIdsRef.current;
+      const ghostSizeChanges: MeasuredSizes = {};
+      const liveChanges = changes.filter((c) => {
+        if (c.type === 'remove') return false;
+        if ('id' in c && ghostIds.has(c.id)) {
+          if (c.type === 'dimensions' && c.dimensions) ghostSizeChanges[c.id] = c.dimensions;
+          return false;
+        }
+        return true;
+      });
+      if (Object.keys(ghostSizeChanges).length > 0) {
+        setGhostSizes((prev) => {
+          const changed = Object.entries(ghostSizeChanges).filter(
+            ([id, size]) => prev[id]?.width !== size.width || prev[id]?.height !== size.height
+          );
+          return changed.length === 0 ? prev : { ...prev, ...Object.fromEntries(changed) };
+        });
+      }
+      // Changes for ghosts never reach the editor's nodes (they are not in them)
+      if (liveChanges.length > 0) onNodesChange(liveChanges);
+    },
     [onNodesChange]
   );
 
@@ -390,14 +500,18 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
   );
 
   // Dragging an output handle into empty canvas offers to create the next step there
-  const onConnectEnd: OnConnectEnd = useCallback((event, connectionState) => {
-    const { fromNode, fromHandle } = connectionState;
-    if (connectionState.isValid !== null || connectionState.toNode || !fromNode) return;
-    if (fromHandle?.type !== 'source' || fromHandle.id === LOOP_BACK_HANDLE) return;
-    const clientX = 'clientX' in event ? event.clientX : (event.changedTouches[0]?.clientX ?? 0);
-    const clientY = 'clientY' in event ? event.clientY : (event.changedTouches[0]?.clientY ?? 0);
-    setAddNodeMenu({ x: clientX, y: clientY, sourceId: fromNode.id, sourceHandle: fromHandle.id });
-  }, []);
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event, connectionState) => {
+      const { fromNode, fromHandle } = connectionState;
+      if (connectionState.isValid !== null || connectionState.toNode || !fromNode) return;
+      if (fromHandle?.type !== 'source' || fromHandle.id === LOOP_BACK_HANDLE) return;
+      const clientX = 'clientX' in event ? event.clientX : (event.changedTouches[0]?.clientX ?? 0);
+      const clientY = 'clientY' in event ? event.clientY : (event.changedTouches[0]?.clientY ?? 0);
+      if (guardEdit()) return;
+      setAddNodeMenu({ x: clientX, y: clientY, sourceId: fromNode.id, sourceHandle: fromHandle.id });
+    },
+    [guardEdit]
+  );
 
   const handleQuickAdd = (type: AddableNodeType) => {
     if (!addNodeMenu || !reactFlowInstance) return;
@@ -428,9 +542,10 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
   const onEdgeClick = useCallback(
     (_: React.MouseEvent, edge: Edge) => {
       const sourceNode = graphRef.current.nodes.find((n) => n.id === edge.source);
-      if (isRouteEdge(edge, sourceNode)) openIntentPrompt(edge.source, edge.target);
+      if (!isRouteEdge(edge, sourceNode) || guardEdit()) return;
+      openIntentPrompt(edge.source, edge.target);
     },
-    [openIntentPrompt]
+    [openIntentPrompt, guardEdit]
   );
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
@@ -465,13 +580,13 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
   // Replace the canvas with a quick-start template
   const loadTemplate = useCallback(
     (template: WorkflowTemplate) => {
-      if (yamlErrorRef.current) return;
+      if (guardEdit() || yamlErrorRef.current) return;
       setSelectedNodeId(null);
       relayoutOnMeasureRef.current = true;
       commitGraph(layoutGraph(normalizeGraph(template), layoutDirectionRef.current));
       fitViewSoon();
     },
-    [commitGraph, fitViewSoon]
+    [commitGraph, fitViewSoon, guardEdit]
   );
 
   // Template loader: Linear
@@ -489,6 +604,74 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
     },
     [reactFlowInstance]
   );
+
+  // ---- Assistant bridge (see assistant/editorBridge.ts) ----
+
+  const getYaml = useCallback(() => currentYamlRef.current ?? yamlContentRef.current, []);
+
+  // Apply proposed YAML as one commit: parse, normalize, position, commitGraph. The commit re-serializes against the
+  // current YAML (comment-preserving), so the committed text can differ slightly from `yaml`.
+  const applyYaml = useCallback(
+    (yaml: string): ApplyYamlResult => {
+      if (yamlErrorRef.current) return { ok: false, error: yamlErrorRef.current };
+      const parsed = parseYamlToGraph(yaml);
+      if (parsed.error) return { ok: false, error: parsed.error };
+      const before = { yaml: currentYamlRef.current ?? yamlContentRef.current, graph: graphRef.current };
+      const beforeIssues = issuesRef.current;
+      const proposed = normalizeGraph(parsed);
+      const isFresh = !proposed.nodes.some((n) => before.graph.nodes.some((p) => p.id === n.id));
+      const committed = commitGraph(positionProposedGraph(before.graph, proposed, layoutDirectionRef.current));
+      if (!committed) return { ok: false, error: yamlErrorRef.current ?? 'The proposed YAML could not be applied.' };
+      setSelectedNodeId(null);
+      // A graph that shares nothing with the canvas was laid out from estimated card sizes: redo it once measured
+      relayoutOnMeasureRef.current = isFresh && proposed.nodes.length > 0;
+      const applied = currentYamlRef.current ?? yaml;
+      undoRef.current = { ...before, issues: beforeIssues, applied };
+      setCanUndo(true);
+      fitViewSoon();
+      return { ok: true, yaml: applied };
+    },
+    [commitGraph, fitViewSoon]
+  );
+
+  // Restore the graph and YAML from before the last apply, and tell the parent through onChange. The restored graph
+  // keeps every position, which parsing the old YAML again would lose for nodes the apply had removed.
+  const undoLastApply = useCallback((): boolean => {
+    const snapshot = undoRef.current;
+    if (!snapshot || yamlErrorRef.current || currentYamlRef.current !== snapshot.applied) return false;
+    undoRef.current = null;
+    setCanUndo(false);
+    setSelectedNodeId(null);
+    currentYamlRef.current = snapshot.yaml;
+    graphRef.current = snapshot.graph;
+    setNodes(snapshot.graph.nodes);
+    setEdges(snapshot.graph.edges);
+    setIssues(snapshot.issues);
+    onChangeRef.current?.(snapshot.yaml);
+    return true;
+  }, [setNodes, setEdges]);
+
+  // Any edit after an apply (canvas or YAML tab) makes the snapshot stale: undoing it would drop that edit
+  useEffect(() => {
+    if (undoRef.current && yamlContent !== undoRef.current.applied) {
+      undoRef.current = null;
+      setCanUndo(false);
+    }
+  }, [yamlContent]);
+
+  const assistantBridge = useMemo<EditorBridge>(
+    () => ({
+      getYaml,
+      applyYaml,
+      undoLastApply,
+      canUndo,
+      issues,
+      setPreviewDiff: setPreview,
+      focusNode: handleSelectFromOutline,
+    }),
+    [getYaml, applyYaml, undoLastApply, canUndo, issues, handleSelectFromOutline]
+  );
+  useRegisterEditorBridge(assistantBridge);
 
   return (
     <WorkflowActionsContext.Provider value={workflowActions}>
@@ -521,7 +704,7 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
               onAddFunction={handleAddFunction}
               onAddIterator={handleAddIterator}
               onAddSubworkflow={handleAddSubworkflow}
-              onAutoLayout={handleAutoLayout}
+              onAutoLayout={handleUserAutoLayout}
               layoutDirection={layoutDirection}
               onLayoutDirectionChange={handleLayoutDirectionChange}
               onToggleDataWires={() => setShowDataWires((prev) => !prev)}
@@ -531,13 +714,17 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
             <ReactFlow
               // Remount on direction change so React Flow re-measures the moved handles
               key={layoutDirection}
-              nodes={nodes}
+              nodes={displayNodes}
               edges={visibleEdges}
               onlyRenderVisibleElements={true}
               maxZoom={2}
               defaultEdgeOptions={{
                 type: 'smoothstep',
               }}
+              // Read-only while a proposal is previewed; selection stays on so the panel can show proposed values
+              nodesDraggable={!preview}
+              nodesConnectable={!preview}
+              deleteKeyCode={preview ? null : 'Backspace'}
               onNodesChange={handleNodesChange}
               onEdgesChange={handleEdgesChange}
               onBeforeDelete={onBeforeDelete}
@@ -623,6 +810,7 @@ export const WorkflowVisualEditor = ({ yamlContent = '', onChange }: WorkflowVis
             startNodeId={startNodeId}
             onSetStartAgent={handleSetStartAgent}
             onDeleteNode={handleDeleteNode}
+            readOnly={!!preview}
           />
         </ReactFlowProvider>
       </div>

@@ -10,6 +10,8 @@ from agents_module.services.async_agentic_execution_service import (
 from agents_module.services.namespace_service import NamespaceService
 from agents_module.services.workflow_crud_service import WorkflowCrudService
 from agents_module.services.workflow_inference_service import WorkflowInferenceService
+from agents_module.services.workflow_assistant.limits import AssistantLimits
+from agents_module.services.workflow_assistant.service import WorkflowAssistantService
 
 
 class AgentsContainer(containers.DeclarativeContainer):
@@ -106,6 +108,33 @@ class AgentsContainer(containers.DeclarativeContainer):
         agent_crud_service=agent_crud_service,
         tool_loader=tool_loader,
         agent_inference_service=agent_inference_service,
+    )
+
+    assistant_limits = providers.Singleton(
+        AssistantLimits,
+        enabled=config.workflow_assistant.enabled,
+        max_rounds=config.workflow_assistant.max_rounds,
+        max_repair_rounds=config.workflow_assistant.max_repair_rounds,
+        max_total_tokens=config.workflow_assistant.max_total_tokens,
+        timeout_seconds=config.workflow_assistant.timeout_seconds,
+        max_history_messages=config.workflow_assistant.max_history_messages,
+        max_message_chars=config.workflow_assistant.max_message_chars,
+        max_yaml_chars=config.workflow_assistant.max_yaml_chars,
+        max_tool_output_chars=config.workflow_assistant.max_tool_output_chars,
+        max_output_tokens=config.workflow_assistant.max_output_tokens,
+    )
+
+    workflow_assistant_service = providers.Singleton(
+        WorkflowAssistantService,
+        agent_inference_service=agent_inference_service,
+        workflow_crud_service=workflow_crud_service,
+        limits=assistant_limits,
+        llm_inference_config_service=llm_inference_config_service,
+        tool_loader=tool_loader,
+        message_processor_repository=message_processor_repository,
+        api_services_manager=api_services_manager,
+        guardrails_engine=guardrails_engine,
+        cache_manager=cache_manager,
     )
 
     celery_settings = providers.Singleton(
