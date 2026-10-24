@@ -190,6 +190,14 @@ def get_services() -> WorkerServices:
         container = ApplicationContainer()
         container.config.from_dict(CONFIG)
         container.init_resources()
+        # trigger_api_service nodes call execute_api_service, which takes the
+        # ApiProxy by injection (Provide[...]); without this wiring a workflow run
+        # by the worker gets the unresolved marker and fails with "'Provide'
+        # object has no attribute 'process_request'". Same wiring as floware's.
+        container.api_services.wire(
+            modules=['api_services_module.api_services_container'],
+            packages=['api_services_module.core', 'api_services_module.execution'],
+        )
 
         _services = WorkerServices(
             agent_inference=container.agents.agent_inference_service(),
