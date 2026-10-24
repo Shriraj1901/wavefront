@@ -4,6 +4,7 @@ No DB connection owned by the worker — status updates go through Redis Streams
 Cloud / Redis / DB settings come from package config.ini.
 """
 
+import json
 import threading
 from dataclasses import dataclass
 from typing import Optional
@@ -12,6 +13,10 @@ from dependency_injector import containers
 from dependency_injector import providers
 
 from api_services_module.api_services_container import ApiServicesContainer
+from api_services_module.core.proxy import ApiProxy
+from api_services_module.utils.api_change_publisher import (
+    REDIS_API_SERVICE_UPDATES_CHANNEL,
+)
 from agents_module.agents_container import AgentsContainer
 from agents_module.services.agent_inference_service import AgentInferenceService
 from agents_module.services.workflow_inference_service import (
@@ -19,6 +24,7 @@ from agents_module.services.workflow_inference_service import (
 )
 from common_module.common_container import CommonContainer
 from common_module.config_loader import is_truthy
+from common_module.log.logger import logger
 from db_repo_module.cache.cache_manager import CacheManager
 from db_repo_module.database.connection import DatabaseConfig, DatabaseClient
 from db_repo_module.db_repo_container import DatabaseModuleContainer
@@ -172,6 +178,37 @@ class ApplicationContainer(containers.DeclarativeContainer):
     )
 
 
+def _listen_for_api_service_updates(cache: CacheManager, proxy: ApiProxy) -> None:
+    """Follow floware's API-service update channel, as floware's own listener does.
+
+    The worker has no routes to reload and no event loop between tasks, so a
+    change only evicts the service from this process's registry; the next
+    trigger_api_service call loads the current definition from the database
+    (ApiProxy loads a service it does not have on first use). That covers
+    create, update and delete alike.
+    """
+    pubsub = cache.subscribe(channels=[REDIS_API_SERVICE_UPDATES_CHANNEL])
+
+    def run():
+        try:
+            for message in pubsub.listen():
+                if message.get('type') != 'message':
+                    continue
+                try:
+                    service_id = json.loads(message['data'])['service_id']
+                    proxy.remove_service(service_id)
+                    logger.info(
+                        f'API service {service_id} changed; reloads on next use'
+                    )
+                except Exception as e:
+                    logger.error(f'Bad API service update message: {e}')
+        except Exception as e:
+            logger.error(f'API service update listener stopped: {e}')
+
+    threading.Thread(target=run, name='api-service-updates', daemon=True).start()
+    logger.info(f'Subscribed to Redis channel: {REDIS_API_SERVICE_UPDATES_CHANNEL}')
+
+
 def get_services() -> WorkerServices:
     global _services
     if _services is not None:
@@ -197,6 +234,9 @@ def get_services() -> WorkerServices:
         container.api_services.wire(
             modules=['api_services_module.api_services_container'],
             packages=['api_services_module.core', 'api_services_module.execution'],
+        )
+        _listen_for_api_service_updates(
+            container.db.cache_manager(), container.api_services.api_proxy()
         )
 
         _services = WorkerServices(
