@@ -49,6 +49,8 @@ class WorkerServices:
 
 _lock = threading.Lock()
 _services: Optional[WorkerServices] = None
+_container: Optional['ApplicationContainer'] = None
+_api_services_loaded = False
 
 
 def _build_db_client(database: dict) -> DatabaseClient:
@@ -209,8 +211,34 @@ def _listen_for_api_service_updates(cache: CacheManager, proxy: ApiProxy) -> Non
     logger.info(f'Subscribed to Redis channel: {REDIS_API_SERVICE_UPDATES_CHANNEL}')
 
 
+def load_api_services() -> None:
+    """Load every API service into this process's registry, as floware does at startup.
+
+    Called once the worker is up (signals.py), outside any running event loop.
+    Updates after that arrive on the update channel, and a service missing for
+    any reason still loads on first use, so a failure here is logged, not raised.
+    """
+    global _api_services_loaded
+    from celery_worker.event_loop import get_event_loop
+
+    with _lock:
+        if _api_services_loaded:
+            return
+        _api_services_loaded = True
+    get_services()
+    try:
+        registry = _container.api_services.initialized_service_registry()
+        get_event_loop().run_until_complete(registry.load_from_db())
+        proxy = _container.api_services.api_proxy()
+        for service in registry.get_all_services().values():
+            proxy.auth_manager.register_service_auth(service)
+        logger.info(f'Loaded {len(registry.get_all_services())} API services')
+    except Exception as e:
+        logger.warning(f'Failed to load API services at startup: {e}')
+
+
 def get_services() -> WorkerServices:
-    global _services
+    global _services, _container
     if _services is not None:
         return _services
 
@@ -239,6 +267,7 @@ def get_services() -> WorkerServices:
             container.db.cache_manager(), container.api_services.api_proxy()
         )
 
+        _container = container
         _services = WorkerServices(
             agent_inference=container.agents.agent_inference_service(),
             workflow_inference=container.agents.workflow_inference_service(),
