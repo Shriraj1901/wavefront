@@ -117,3 +117,19 @@ END_CONVERSATION_FAREWELL_DESCRIPTION = (
     'Optional custom farewell message to say to the user before ending. '
     'If not provided, a default farewell is used.'
 )
+
+
+# ---------------------------------------------------------------------- user_idle
+
+USER_IDLE_CHECK_IN_PROMPT = (
+    'The user has not said anything for a while. In one short sentence, in the '
+    'language of the conversation, politely ask whether they are still there. '
+    'If you were waiting on an answer to a question, you may briefly restate it. '
+    'Do not call any tools.'
+)
+
+USER_IDLE_GOODBYE_PROMPT = (
+    'The user has not answered your check-ins. In one short sentence, in the '
+    'language of the conversation, say that you will end the call now since they '
+    'seem to be away, and say goodbye. Do not ask anything and do not call any tools.'
+)

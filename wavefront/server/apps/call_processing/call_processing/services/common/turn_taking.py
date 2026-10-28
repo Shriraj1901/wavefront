@@ -11,8 +11,13 @@ Per agent, via ``conversation_config.turn_taking`` on the voice agent::
         "vad_min_volume": 0.65,         // 0-1, ignore audio quieter than this
         "vad_start_ms": 200,            // speech needed before a turn can start
         "vad_stop_ms": 200,             // silence before Smart Turn is asked
-        "end_of_turn_timeout_ms": 3000  // silence that ends a turn Smart Turn
+        "end_of_turn_timeout_ms": 3000, // silence that ends a turn Smart Turn
                                         // still thinks is unfinished
+        "idle_timeout_ms": 0,           // caller silence before the bot checks
+                                        // in; 0 = never (see user_idle.py)
+        "idle_max_check_ins": 2,        // check-ins before a goodbye and hang-up
+        "idle_fixed_goodbye": false,    // off: the LLM words the goodbye
+        "idle_goodbye_message": "..."   // spoken as written when fixed
       }
     }
 
@@ -76,8 +81,10 @@ from call_processing.services.common.conversation_config import (
     config_section,
 )
 from call_processing.services.common.smart_turn import SharedSmartTurnAnalyzer
+from call_processing.services.common.user_idle import DEFAULT_IDLE_GOODBYE
 
 _SECTION = 'conversation_config.turn_taking'
+_MIN_IDLE_TIMEOUT_MS = 2000
 
 
 class VADWhenBotSilentStartStrategy(VADUserTurnStartStrategy):
@@ -138,6 +145,12 @@ class TurnTakingConfig:
     # assumes 0.2 s.
     vad_stop_secs: float = 0.2
     end_of_turn_timeout_secs: float = 3.0
+    # Off: the bot waits in silence for as long as it takes
+    idle_timeout_secs: float = 0.0
+    idle_max_check_ins: int = 2
+    # Off: the LLM words the goodbye, in the conversation's language
+    idle_fixed_goodbye: bool = False
+    idle_goodbye_message: str = DEFAULT_IDLE_GOODBYE
 
     @classmethod
     def from_agent_config(cls, agent_config: Mapping[str, Any]) -> TurnTakingConfig:
@@ -148,6 +161,14 @@ class TurnTakingConfig:
             return bounded_number(
                 raw, key, default, minimum=minimum, maximum=maximum, path=_SECTION
             )
+
+        idle_timeout_ms = number(
+            'idle_timeout_ms', d.idle_timeout_secs * 1000, 0, 60000
+        )
+        if 0 < idle_timeout_ms < _MIN_IDLE_TIMEOUT_MS:
+            # A tiny timeout would check in on every breath
+            idle_timeout_ms = _MIN_IDLE_TIMEOUT_MS
+        idle_goodbye = raw.get('idle_goodbye_message')
 
         return cls(
             barge_in=raw['barge_in']
@@ -169,6 +190,14 @@ class TurnTakingConfig:
                 'end_of_turn_timeout_ms', d.end_of_turn_timeout_secs * 1000, 500, 10000
             )
             / 1000,
+            idle_timeout_secs=idle_timeout_ms / 1000,
+            idle_max_check_ins=int(
+                number('idle_max_check_ins', d.idle_max_check_ins, 0, 5)
+            ),
+            idle_fixed_goodbye=raw.get('idle_fixed_goodbye') is True,
+            idle_goodbye_message=idle_goodbye.strip()
+            if isinstance(idle_goodbye, str) and idle_goodbye.strip()
+            else d.idle_goodbye_message,
         )
 
     def vad_params(self) -> VADParams:

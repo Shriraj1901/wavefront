@@ -18,6 +18,10 @@ export const DEFAULT_CONVERSATION_CONFIG = {
     vad_start_ms: 200,
     vad_stop_ms: 200,
     end_of_turn_timeout_ms: 3000,
+    idle_timeout_ms: 0,
+    idle_max_check_ins: 2,
+    idle_fixed_goodbye: false,
+    idle_goodbye_message: "It seems you're no longer there, so I'll end the call now. Goodbye!",
   },
   filler_speech: {
     thinking: false,
@@ -56,9 +60,15 @@ export interface ConfigOptionDoc {
   kind: 'boolean' | 'number' | 'text' | 'phrases';
   min?: number;
   max?: number;
+  /** 0 turns the option off; any other value below this is raised to it. */
+  minWhenOn?: number;
   step?: number;
   /** Boolean option in the same section that must be on for this one to matter. */
   requires?: string;
+  /** Number option in the same section that must be above 0 for this one to matter. */
+  requiresPositive?: string;
+  /** Boolean shown among the section's hidden settings, beside what it controls, not with the toggles. */
+  inSettings?: boolean;
   /** For phrases: what the service says for languages the bot does not customise. */
   builtInPhrases?: Record<string, string[]>;
   defaultValue: string;
@@ -169,6 +179,53 @@ export const CONVERSATION_CONFIG_DOCS: ConfigSectionDoc[] = [
         description:
           'When the user pauses mid-sentence, how much silence makes the bot reply anyway. Lower feels snappier but can talk over users who pause to think.',
       },
+      {
+        key: 'idle_timeout_ms',
+        label: 'Silence before checking in (ms)',
+        kind: 'number',
+        min: 0,
+        max: 60000,
+        minWhenOn: 2000,
+        step: 500,
+        defaultValue: '0',
+        range: '0 (off), 2000 – 60000',
+        description:
+          'When the user stays silent this long after the bot finishes speaking, the bot asks whether they are still there, in the language of the conversation. 0 turns this off. The countdown pauses while a tool runs. It starts only once the bot has spoken, so a bot without a welcome message waits for the user to speak first.',
+      },
+      {
+        key: 'idle_max_check_ins',
+        label: 'Check-ins before hanging up',
+        kind: 'number',
+        min: 0,
+        max: 5,
+        step: 1,
+        requiresPositive: 'idle_timeout_ms',
+        defaultValue: '2',
+        range: '0 – 5',
+        description:
+          'How many times the bot asks before saying goodbye and ending the call. Only words the bot understood count as an answer: a cough or background noise does not reset the count. 0 skips the check-ins: the bot says goodbye at the first silence.',
+      },
+      {
+        key: 'idle_fixed_goodbye',
+        label: 'Use a fixed goodbye',
+        kind: 'boolean',
+        inSettings: true,
+        requiresPositive: 'idle_timeout_ms',
+        defaultValue: 'false',
+        range: 'true / false',
+        description:
+          'Off: the AI says the goodbye to a silent user, in the language of the conversation. On: the bot says the goodbye message below, exactly as written.',
+      },
+      {
+        key: 'idle_goodbye_message',
+        label: 'Goodbye message',
+        kind: 'text',
+        requires: 'idle_fixed_goodbye',
+        requiresPositive: 'idle_timeout_ms',
+        defaultValue: "It seems you're no longer there, so I'll end the call now. Goodbye!",
+        range: 'text',
+        description: 'What the bot says before hanging up on a silent user, when a fixed goodbye is on.',
+      },
     ],
   },
   {
@@ -257,6 +314,19 @@ export const CONVERSATION_CONFIG_DOCS: ConfigSectionDoc[] = [
     ],
   },
 ];
+
+/** Toggles always show; the settings that tune them show when the section is opened. */
+export const splitSectionOptions = (options: ConfigOptionDoc[]) => ({
+  toggles: options.filter((option) => option.kind === 'boolean' && !option.inSettings),
+  settings: options.filter((option) => option.kind !== 'boolean' || option.inSettings),
+});
+
+/** Whether the service will clamp this value (numbers outside the option's range). */
+export const isOutOfRange = (option: ConfigOptionDoc, value: unknown): boolean => {
+  if (option.kind !== 'number' || typeof value !== 'number') return false;
+  if (option.minWhenOn !== undefined && value > 0 && value < option.minWhenOn) return true;
+  return (option.min !== undefined && value < option.min) || (option.max !== undefined && value > option.max);
+};
 
 export const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);

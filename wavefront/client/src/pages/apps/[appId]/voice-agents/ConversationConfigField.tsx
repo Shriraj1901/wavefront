@@ -18,7 +18,9 @@ import {
   DEFAULT_CONVERSATION_CONFIG,
   DEFAULT_EDITOR_TEXT,
   isDeepEqual,
+  isOutOfRange,
   isPlainObject,
+  splitSectionOptions,
 } from './conversation-config';
 
 type PhraseMap = Record<string, string[]>;
@@ -128,6 +130,10 @@ function ConfigSection({ doc, values, hasWelcomeMessage, onChange }: ConfigSecti
       const required = doc.options.find((o) => o.key === option.requires);
       return `Turn on "${required?.label ?? option.requires}" to use this.`;
     }
+    if (option.requiresPositive && !(Number(effective(option.requiresPositive)) > 0)) {
+      const required = doc.options.find((o) => o.key === option.requiresPositive);
+      return `Set "${required?.label ?? option.requiresPositive}" above 0 to use this.`;
+    }
     if (option.key === 'mute_until_first_bot_complete') {
       if (!hasWelcomeMessage) return 'Needs a welcome message (Behavior tab).';
       if (effective('barge_in') === false) return 'Barge-in is off, so the welcome already plays fully.';
@@ -147,9 +153,7 @@ function ConfigSection({ doc, values, hasWelcomeMessage, onChange }: ConfigSecti
     />
   );
 
-  // Toggles always show; the settings that tune them show when the section is opened
-  const toggles = doc.options.filter((option) => option.kind === 'boolean');
-  const settings = doc.options.filter((option) => option.kind !== 'boolean');
+  const { toggles, settings } = splitSectionOptions(doc.options);
   const settingsChanged = settings.filter((option) =>
     isChanged(values[option.key], defaultOf(doc.section, option.key))
   ).length;
@@ -195,10 +199,7 @@ interface ConfigOptionProps {
 function ConfigOption({ id, option, value, defaultValue, inactiveReason, onChange }: ConfigOptionProps) {
   const isSet = isChanged(value, defaultValue);
   const disabled = !!inactiveReason;
-  const outOfRange =
-    option.kind === 'number' &&
-    typeof value === 'number' &&
-    ((option.min !== undefined && value < option.min) || (option.max !== undefined && value > option.max));
+  const outOfRange = isOutOfRange(option, value);
 
   return (
     <div className={cn('flex flex-col gap-2', option.kind === 'phrases' && 'sm:col-span-2')}>
