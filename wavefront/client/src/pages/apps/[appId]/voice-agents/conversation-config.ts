@@ -18,6 +18,7 @@ export const DEFAULT_CONVERSATION_CONFIG = {
     vad_start_ms: 200,
     vad_stop_ms: 200,
     end_of_turn_timeout_ms: 3000,
+    transcript_turn_start: true,
     idle_timeout_ms: 0,
     idle_max_check_ins: 2,
     idle_fixed_goodbye: false,
@@ -178,6 +179,16 @@ export const CONVERSATION_CONFIG_DOCS: ConfigSectionDoc[] = [
         range: '500 – 10000',
         description:
           'When the user pauses mid-sentence, how much silence makes the bot reply anyway. Lower feels snappier but can talk over users who pause to think.',
+      },
+      {
+        key: 'transcript_turn_start',
+        label: 'Answer speech the voice detector missed',
+        kind: 'boolean',
+        inSettings: true,
+        defaultValue: 'true',
+        range: 'true / false',
+        description:
+          'The voice detector can miss a short or quiet reply (a single word such as "Hindi") that speech-to-text still transcribes. On: the transcript starts the user\'s turn and the bot answers. Off: the bot stays silent until the user speaks again, then answers both. With barge-in off, only words said while the bot is silent count. Has no effect when words needed to interrupt is above 0: those turns already start from transcripts.',
       },
       {
         key: 'idle_timeout_ms',

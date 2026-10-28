@@ -138,6 +138,13 @@ function ConfigSection({ doc, values, hasWelcomeMessage, onChange }: ConfigSecti
       if (!hasWelcomeMessage) return 'Needs a welcome message (Behavior tab).';
       if (effective('barge_in') === false) return 'Barge-in is off, so the welcome already plays fully.';
     }
+    if (
+      option.key === 'transcript_turn_start' &&
+      effective('barge_in') !== false &&
+      Number(effective('barge_in_min_words')) > 0
+    ) {
+      return 'Words needed to interrupt is above 0, so transcripts already start turns.';
+    }
     return undefined;
   };
 

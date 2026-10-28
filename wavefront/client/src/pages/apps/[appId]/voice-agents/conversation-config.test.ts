@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { CONVERSATION_CONFIG_DOCS, isOutOfRange, splitSectionOptions } from './conversation-config';
+import {
+  CONVERSATION_CONFIG_DOCS,
+  DEFAULT_CONVERSATION_CONFIG,
+  isOutOfRange,
+  splitSectionOptions,
+} from './conversation-config';
 
 const turnTaking = CONVERSATION_CONFIG_DOCS.find((doc) => doc.section === 'turn_taking')!;
 const keys = (options: { key: string }[]) => options.map((option) => option.key);
@@ -42,6 +47,14 @@ describe('splitSectionOptions', () => {
 
     expect(keys(toggles)).toEqual(['barge_in', 'mute_until_first_bot_complete']);
     expect(keys(settings)).not.toContain('barge_in');
+  });
+
+  it('keeps the missed-speech safety net with the hidden settings, on by default', () => {
+    const { toggles, settings } = splitSectionOptions(turnTaking.options);
+
+    expect(keys(toggles)).not.toContain('transcript_turn_start');
+    expect(keys(settings)).toContain('transcript_turn_start');
+    expect(DEFAULT_CONVERSATION_CONFIG.turn_taking.transcript_turn_start).toBe(true);
   });
 
   it('keeps the fixed-goodbye toggle with the hidden settings, right before its message', () => {
