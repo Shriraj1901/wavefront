@@ -24,6 +24,9 @@ export const DEFAULT_CONVERSATION_CONFIG = {
     idle_fixed_goodbye: false,
     idle_goodbye_message: "It seems you're no longer there, so I'll end the call now. Goodbye!",
   },
+  language_switch: {
+    direct_switch: false,
+  },
   filler_speech: {
     thinking: false,
     thinking_delay_ms: 800,
@@ -236,6 +239,23 @@ export const CONVERSATION_CONFIG_DOCS: ConfigSectionDoc[] = [
         defaultValue: "It seems you're no longer there, so I'll end the call now. Goodbye!",
         range: 'text',
         description: 'What the bot says before hanging up on a silent user, when a fixed goodbye is on.',
+      },
+    ],
+  },
+  {
+    section: 'language_switch',
+    title: 'Language switching',
+    summary:
+      'How a multi-language agent changes language when the user picks one. Only applies to agents with more than one supported language.',
+    options: [
+      {
+        key: 'direct_switch',
+        label: 'Switch language without an extra AI call',
+        kind: 'boolean',
+        defaultValue: 'false',
+        range: 'true / false',
+        description:
+          'Off: when the user picks a language, the AI first switches it and then makes a second call to reply, so the user waits for two AI calls (often 3 to 7 seconds). On: when the user says only a language name ("Hindi", "हिंदी", "Hindi please"), the bot switches straight away and the AI replies in one call, about 2 seconds sooner. Anything more than a language name ("can we talk in Hindi?") still goes through the AI as before.',
       },
     ],
   },

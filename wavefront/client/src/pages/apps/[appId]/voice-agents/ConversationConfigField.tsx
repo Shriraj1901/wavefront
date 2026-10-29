@@ -31,6 +31,8 @@ interface ConversationConfigFieldProps<T extends FieldValues> {
   name: Path<T>;
   /** Whether the agent has a welcome message; without one the welcome options do nothing. */
   hasWelcomeMessage: boolean;
+  /** Whether the agent supports more than one language; without that the language options do nothing. */
+  isMultiLanguage: boolean;
 }
 
 const parseObject = (text: string): ConversationConfig | null => {
@@ -56,6 +58,7 @@ function ConversationConfigField<T extends FieldValues>({
   form,
   name,
   hasWelcomeMessage,
+  isMultiLanguage,
 }: ConversationConfigFieldProps<T>) {
   // An empty field means "no config": every option follows its default.
   const readConfig = () => parseObject((form.getValues(name) as string | undefined) || '{}');
@@ -102,6 +105,7 @@ function ConversationConfigField<T extends FieldValues>({
               doc={section}
               values={sectionOf(config, section.section)}
               hasWelcomeMessage={hasWelcomeMessage}
+              isMultiLanguage={isMultiLanguage}
               onChange={(key, value) => setOption(section.section, key, value)}
             />
           ))}
@@ -117,10 +121,11 @@ interface ConfigSectionProps {
   doc: ConfigSectionDoc;
   values: Record<string, unknown>;
   hasWelcomeMessage: boolean;
+  isMultiLanguage: boolean;
   onChange: (key: string, value: unknown) => void;
 }
 
-function ConfigSection({ doc, values, hasWelcomeMessage, onChange }: ConfigSectionProps) {
+function ConfigSection({ doc, values, hasWelcomeMessage, isMultiLanguage, onChange }: ConfigSectionProps) {
   const [open, setOpen] = useState(false);
   const effective = (key: string) => values[key] ?? defaultOf(doc.section, key);
 
@@ -137,6 +142,9 @@ function ConfigSection({ doc, values, hasWelcomeMessage, onChange }: ConfigSecti
     if (option.key === 'mute_until_first_bot_complete') {
       if (!hasWelcomeMessage) return 'Needs a welcome message (Behavior tab).';
       if (effective('barge_in') === false) return 'Barge-in is off, so the welcome already plays fully.';
+    }
+    if (doc.section === 'language_switch' && !isMultiLanguage) {
+      return 'Needs more than one supported language (Languages tab).';
     }
     if (
       option.key === 'transcript_turn_start' &&

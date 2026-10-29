@@ -65,3 +65,20 @@ describe('splitSectionOptions', () => {
     expect(settingKeys[toggleAt + 1]).toBe('idle_goodbye_message');
   });
 });
+
+describe('language switching', () => {
+  const languageSwitch = CONVERSATION_CONFIG_DOCS.find((doc) => doc.section === 'language_switch')!;
+
+  it('offers the direct switch as a visible tickbox, off by default', () => {
+    const { toggles } = splitSectionOptions(languageSwitch.options);
+
+    expect(keys(toggles)).toEqual(['direct_switch']);
+    expect(DEFAULT_CONVERSATION_CONFIG.language_switch.direct_switch).toBe(false);
+  });
+
+  it('documents every default it writes out', () => {
+    const documented = keys(languageSwitch.options);
+
+    expect(Object.keys(DEFAULT_CONVERSATION_CONFIG.language_switch)).toEqual(documented);
+  });
+});

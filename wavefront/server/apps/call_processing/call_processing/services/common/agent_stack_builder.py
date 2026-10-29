@@ -26,6 +26,10 @@ from call_processing.constants.language_config import LANGUAGE_DISPLAY_NAMES
 from call_processing.log.logger import logger
 from call_processing.services.common.agent_stack import AgentStack, SharedSession
 from call_processing.services.common.audio_config import with_sample_rate
+from call_processing.services.common.direct_language_switch import (
+    DirectLanguageSwitchProcessor,
+    LanguageSwitchConfig,
+)
 from call_processing.services.common.filler_speech import (
     FillerSpeechConfig,
     FillerSpeechProcessor,
@@ -356,6 +360,29 @@ def build_agent_stack(
     if use_language_tool:
         context_container['context'] = context
 
+    # A bare language name switches before the LLM runs (one LLM call, not two)
+    language_switch_config = LanguageSwitchConfig.from_agent_config(agent_config)
+    direct_switch = language_switch_config.direct_switch and use_language_tool
+    if language_switch_config.direct_switch and not use_language_tool:
+        logger.info(
+            'language_switch.direct_switch ignored: the agent does not switch '
+            'language through the LLM tool'
+        )
+    elif use_language_tool:
+        logger.info(f'Direct language switch: {"on" if direct_switch else "off"}')
+    language_switcher = DirectLanguageSwitchProcessor(
+        enabled=direct_switch,
+        supported_languages=supported_languages,
+        language_state=language_state,
+        task_container=task_container,
+        tts_provider=tts_config['provider'],
+        stt_provider=stt_config['provider'],
+        tts_voice_ids=tts_voice_ids_dict,
+        on_language_selected=lambda language: (
+            shared.events.emit_language_changed(language)
+        ),
+    )
+
     # VAD must live on the user aggregator in Pipecat 1.x — TransportParams
     # no longer accepts vad_analyzer (silently dropped), which would leave
     # VADUserTurnStartStrategy with nothing to drive turn starts.
@@ -529,6 +556,7 @@ def build_agent_stack(
         tts_voice_ids=tts_voice_ids_dict,
         welcome_message=(agent_config.get('welcome_message') or '').strip(),
         filler=filler,
+        language_switcher=language_switcher,
         stt_config=stt_config_with_params,
         tts_config=tts_config_with_params,
     )

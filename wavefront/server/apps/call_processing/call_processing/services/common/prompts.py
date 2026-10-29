@@ -103,6 +103,16 @@ def unsupported_language_error(
     )
 
 
+def direct_language_switch_note(language_name: str) -> str:
+    """Added after a user message that only chose a language, once the service
+    has switched to it without the tool (``direct_language_switch.py``)."""
+    return (
+        f'The user chose {language_name}, and the conversation language is now '
+        f'{language_name}. Do not call detect_and_switch_language for this message: '
+        f'the switch is done. Reply to the user in {language_name}.'
+    )
+
+
 # ---------------------------------------------------------------------- end_conversation
 
 END_CONVERSATION_DESCRIPTION = (
